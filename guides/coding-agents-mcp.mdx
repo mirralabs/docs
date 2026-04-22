@@ -1,0 +1,202 @@
+---
+title: Coding agents via MCP
+description: Wire Claude Code, Cursor, or any MCP-compatible agent into a Mirra session so it verifies integration code against real mirror behavior.
+---
+
+Your coding agent guesses at vendor API behavior from training data that was captured years ago. Mirra gives it a **Model Context Protocol** endpoint that returns ground truth — real responses, real webhook signatures, real state — from a live mirror.
+
+This guide gets Claude Code, Cursor, Copilot, Windsurf, Cline, or any MCP-compatible agent onto Mirra's MCP server in under five minutes.
+
+## What the agent gets
+
+Once connected, the agent can:
+
+- **Spin up a Mirra session** from inside its coding context.
+- **Introspect mirror state** — list customers in Stripe, emails in Resend, messages in Twilio.
+- **Fire real requests** against the mirror and see the real response shape — not a guess.
+- **Inspect webhooks** that fired — payload, signature header, timing — to verify the handler it just wrote.
+- **Reset mirror state** between iterations so its experiments don't pile up.
+
+Net effect: the code the agent ships was **verified against ground truth**, not hallucinated from training data.
+
+## The MCP endpoint
+
+```
+https://mcp.mirra.run
+```
+
+Authentication is your Mirra access token, passed via the standard MCP `Authorization: Bearer <token>` header. Tokens are the same ones the CLI uses — if you're already logged in (`mirra login`) the same token works.
+
+## The fast install: `@mirrahq/skills`
+
+The easiest way to wire any of Claude Code / Cursor / Windsurf / Cline / Copilot is:
+
+```bash
+npx @mirrahq/skills
+```
+
+The skill script does four things:
+
+1. Detects which agent(s) you have installed.
+2. Installs the Mirra MCP connection into each agent's config.
+3. Detects the vendors your current project uses and registers them.
+4. Drops a starter scenario into `scenarios/` so you have something to run immediately.
+
+Run it once per project. Your agent can now reach the Mirra mirrors from its next prompt.
+
+## Per-agent setup
+
+If you'd rather wire it manually:
+
+<Tabs>
+  <Tab title="Claude Code">
+    Add to `~/.config/claude-code/mcp.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "mirra": {
+          "url": "https://mcp.mirra.run",
+          "headers": {
+            "Authorization": "Bearer ${MIRRA_TOKEN}"
+          }
+        }
+      }
+    }
+    ```
+
+    Restart Claude Code. The Mirra tools appear in the tool picker.
+  </Tab>
+  <Tab title="Cursor">
+    In Cursor: **Settings → MCP → Add server**:
+
+    - **Name:** `mirra`
+    - **Server URL:** `https://mcp.mirra.run`
+    - **Headers:** `Authorization: Bearer ${MIRRA_TOKEN}`
+
+    Cursor reloads the MCP registry automatically.
+  </Tab>
+  <Tab title="Copilot (agent mode)">
+    Add to `~/.vscode/mcp-config.json`:
+
+    ```json
+    {
+      "servers": {
+        "mirra": {
+          "url": "https://mcp.mirra.run",
+          "auth": { "bearer": "${MIRRA_TOKEN}" }
+        }
+      }
+    }
+    ```
+
+    Reload VS Code.
+  </Tab>
+  <Tab title="Windsurf">
+    Add to `~/.codeium/windsurf/mcp_config.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "mirra": {
+          "url": "https://mcp.mirra.run",
+          "authorization": "Bearer ${MIRRA_TOKEN}"
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Cline">
+    Cline reads MCP from `~/.config/cline/mcp.json`. Same shape as Claude Code.
+  </Tab>
+</Tabs>
+
+All agents need the `MIRRA_TOKEN` environment variable set (or hardcoded into the config if you prefer).
+
+## The tools the agent gets
+
+Once wired, these MCP tools are available in the agent's context:
+
+<AccordionGroup>
+  <Accordion title="mirra.session.start">
+    Create a new ephemeral or persistent session. Parameters: `mirrors` (list), `seeds` (optional), `persistent` (bool). Returns the session ID and mirror URLs.
+  </Accordion>
+  <Accordion title="mirra.session.state">
+    Dump the current state of one or all mirrors in a session. Returns JSON. The agent can inspect "what customers exist in this Stripe mirror" without running any of your code.
+  </Accordion>
+  <Accordion title="mirra.session.request">
+    Fire an arbitrary HTTP request at a mirror. Parameters: `mirror`, `method`, `path`, `body`, `headers`. Returns the full response. Used by the agent to explore the API surface before writing code that uses it.
+  </Accordion>
+  <Accordion title="mirra.session.webhooks">
+    List webhooks that fired in the session. Parameters: `mirror`, `since`. Returns event type, payload, signature header, timestamp. The agent uses this to verify its webhook handler received what it expected.
+  </Accordion>
+  <Accordion title="mirra.session.reset">
+    Reset mirror state mid-session. Parameters: `mirror` (optional, defaults to all), `seed` (optional). Returns when reset is complete.
+  </Accordion>
+  <Accordion title="mirra.session.end">
+    Tear down the session. Called automatically when the agent's coding session ends, but can be explicit.
+  </Accordion>
+</AccordionGroup>
+
+## What a session with an agent looks like
+
+A typical Claude Code conversation after the MCP wiring:
+
+```
+you:    Add Stripe subscription upgrades to our API. Handle dunning correctly
+        — past_due should retry for 14 days then cancel.
+
+claude: Let me spin up a Stripe mirror first so I can verify the state machine
+        before I write the code.
+
+        [tool call: mirra.session.start(mirrors: ['stripe'], seeds: { stripe: 'subscription-lifecycle' })]
+        session ses_9xpq ready.
+
+        [tool call: mirra.session.request(mirror: 'stripe', method: 'POST', path: '/v1/subscriptions',
+                                           body: { customer: 'cus_test_abc', items: [...] })]
+        → 201, subscription sub_Qzp in status 'trialing'
+
+        [tool call: mirra.session.request(mirror: 'stripe', method: 'POST',
+                                           path: '/_mirra/simulate', body: { event: 'payment_failed' })]
+        → subscription now in 'past_due'
+        → webhook `invoice.payment_failed` dispatched
+
+        OK — the real Stripe transition is trialing → active on first invoice,
+        but past_due fires when payment fails, and webhook.customer.subscription.updated
+        carries the new status. Writing the handler now.
+
+        [writes code that handles webhook.customer.subscription.updated,
+         verifies signature, transitions internal state accordingly]
+
+        [tool call: mirra.session.webhooks(mirror: 'stripe')]
+        → confirms the webhook payload and signature shape match what the handler expects.
+```
+
+The agent fixed its guess before shipping code. The code that reaches your PR was run against a real Stripe state machine.
+
+## The difference it makes
+
+Without Mirra, the same agent:
+
+- Writes a subscription upgrade handler based on training-data recall of Stripe's API.
+- Writes a mock that matches its recall.
+- Writes tests that pass against the mock.
+- Ships to prod. Real Stripe's `past_due → canceled` transition takes different amounts of time than the agent remembered. Dunning breaks. Customers get double-billed.
+
+With Mirra, the same agent:
+
+- Runs `mirra.session.request` twice, sees the real state machine.
+- Writes a handler grounded in actual behavior.
+- Writes tests against the same mirror — deterministic and real.
+- Ships to prod. The handler matches vendor behavior because it was built against vendor behavior.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="First scenario" icon="file-lines" href="/guides/first-scenario">
+    Write a scenario an agent can drive against.
+  </Card>
+  <Card title="Mirrors catalog" icon="grid" href="/mirrors/overview">
+    Which vendors your agent can verify against today.
+  </Card>
+</Columns>

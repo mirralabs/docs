@@ -1,0 +1,199 @@
+---
+title: Vitest plugin
+description: Drop Mirra into an existing Vitest suite without changing a line of test code.
+---
+
+The `@mirrahq/vitest` plugin wraps your Vitest config so every test runs against Mirra mirrors instead of the real vendors. **You don't change your tests.** You change one line of config.
+
+## Install
+
+```bash
+pnpm add -D @mirrahq/vitest
+# or npm install -D @mirrahq/vitest
+# or yarn add -D @mirrahq/vitest
+```
+
+## Wire it up
+
+Wrap your Vitest config in `withMirra()`:
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import { withMirra } from '@mirrahq/vitest';
+
+export default defineConfig(
+  withMirra({
+    mirrors: ['stripe', 'resend', 'twilio'],
+    resetBetweenTests: true,
+  }),
+);
+```
+
+That's it. Run tests:
+
+```bash
+$ pnpm test
+
+→ mirra: provisioning stripe, resend, twilio…
+✓ mirra: session ses_a7k2 ready in 1.8s
+
+ ✓ tests/signup.test.ts (3)
+ ✓ tests/subscriptions.test.ts (5)
+ ✓ tests/refunds.test.ts (4)
+
+12 passed · 2.4s
+
+→ mirra: session ended · state cleared
+```
+
+Your existing tests — unchanged — ran against faithful mirrors instead of whatever mocks they had before.
+
+## What the plugin does
+
+<Steps>
+  <Step title="Before the test run">
+    Calls `mirra up` internally with the configured mirrors. Reuses a warm-start session if the mirror set + seeds haven't changed since the last run (2-second warm start vs 1.8-second cold).
+  </Step>
+  <Step title="Between each test (optional)">
+    Calls `resetMirraMirrors()` to wipe state back to the seed. Enabled by `resetBetweenTests: true`. Adds ~50-100ms per test; usually worth it.
+  </Step>
+  <Step title="During each test">
+    Your Vitest tests run normally. A TLS proxy routes `api.stripe.com`, `api.resend.com`, and `api.twilio.com` to the session's mirror URLs — no changes needed in your SDK client setup.
+  </Step>
+  <Step title="After the test run">
+    Tears down the ephemeral session. Mirror state is cleared.
+  </Step>
+</Steps>
+
+## Configuration
+
+```typescript
+withMirra({
+  // Required — which mirrors to provision for the run
+  mirrors: ['stripe', 'resend', 'twilio'],
+
+  // Optional — seed each mirror at session start
+  seeds: {
+    stripe: 'subscription-lifecycle',
+    resend: 'transactional-busy',
+  },
+
+  // Optional — reset mirrors between every test (default: false)
+  resetBetweenTests: true,
+
+  // Optional — reset between every file, not every test
+  resetBetweenFiles: true,
+
+  // Optional — reuse an existing session (e.g., your staging session)
+  sessionId: 'ses_a7k2',
+
+  // Optional — use a custom session name (ephemeral)
+  sessionName: 'vitest-ci',
+
+  // Optional — use env-var routing instead of the TLS proxy
+  proxyMode: 'env-var',  // or 'tls' (default)
+
+  // Optional — quieten the mirra-related log lines (default: false)
+  quiet: true,
+})
+```
+
+## Using reset manually
+
+If you want finer control than `resetBetweenTests`, import the reset function and call it where you want:
+
+```typescript
+import { describe, beforeEach, it } from 'vitest';
+import { resetMirraMirrors } from '@mirrahq/vitest';
+
+describe('subscription upgrade', () => {
+  beforeEach(async () => {
+    await resetMirraMirrors();
+    // re-seed: only reset the stripe mirror, leave resend alone
+    // await resetMirraMirrors({ mirrors: ['stripe'] });
+  });
+
+  it('promotes trialing → active on first successful invoice', async () => {
+    // …
+  });
+});
+```
+
+`resetMirraMirrors()` returns a Promise that resolves when every mirror is back at its seed. See [CLI reset reference](/cli/reset) for the underlying behavior.
+
+## Testing webhooks
+
+The Mirra-backed mirrors fire real webhooks on real schedules. Your tests need to handle the async nature:
+
+```typescript
+import { waitForWebhook } from '@mirrahq/vitest';
+
+it('fires email.delivered after email.sent', async () => {
+  const { id: emailId } = await resend.emails.send({
+    from: 'hello@mail.acme.com',
+    to: 'alice@test.com',
+    subject: 'Welcome',
+  });
+
+  // Wait for the webhook we expect
+  const sent = await waitForWebhook({
+    mirror: 'resend',
+    type: 'email.sent',
+    match: (evt) => evt.data.email_id === emailId,
+    timeoutMs: 5000,
+  });
+
+  expect(sent.data.email_id).toBe(emailId);
+
+  const delivered = await waitForWebhook({
+    mirror: 'resend',
+    type: 'email.delivered',
+    match: (evt) => evt.data.email_id === emailId,
+    timeoutMs: 10000,
+  });
+
+  expect(delivered).toBeDefined();
+});
+```
+
+`waitForWebhook()` is a helper that subscribes to the session's event stream, filters, and resolves when a matching event arrives. See [API reference](/reference/api) for the raw event shape.
+
+## Parallel test runs
+
+Vitest runs files in parallel by default. The Mirra plugin gives every file **its own session** when `resetBetweenFiles: true`, so parallel files never contaminate each other:
+
+```typescript
+withMirra({
+  mirrors: ['stripe'],
+  resetBetweenFiles: true,   // ← one session per file
+})
+```
+
+With `resetBetweenFiles: false` (the default), all files share one session and you must design tests not to step on each other — usually via `resetBetweenTests: true`.
+
+## CI
+
+No code changes. Just add `MIRRA_TOKEN` to your CI secrets:
+
+```yaml
+# .github/workflows/test.yml
+env:
+  MIRRA_TOKEN: ${{ secrets.MIRRA_TOKEN }}
+```
+
+The plugin picks it up automatically.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="First scenario" icon="file-lines" href="/guides/first-scenario">
+    Write a markdown scenario — complements Vitest for agent + integration tests.
+  </Card>
+  <Card title="CI integration" icon="circle-check" href="/guides/ci-integration">
+    End-to-end CI wiring with Mirra gates.
+  </Card>
+  <Card title="mirra reset" icon="rotate" href="/cli/reset">
+    The command resetMirraMirrors() wraps.
+  </Card>
+</Columns>

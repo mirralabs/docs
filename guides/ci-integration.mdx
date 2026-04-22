@@ -1,0 +1,235 @@
+---
+title: CI integration
+description: Gate PRs on scenario satisfaction. GitHub Actions, GitLab CI, and CircleCI examples.
+---
+
+Mirra's CLI is built to run in CI. This guide shows the full wiring for the three common platforms and the patterns that keep the integration fast and flake-free.
+
+## The goal
+
+A CI run that:
+
+1. Installs the Mirra CLI.
+2. Runs every `scenarios/*.md` in your repo.
+3. Fails the job if the satisfaction score drops below a threshold you pick.
+4. Uploads a result artifact for inspection on failure.
+
+## Prerequisites
+
+A **Mirra personal access token** from [app.mirra.run/settings/tokens](https://app.mirra.run/settings/tokens). Scope it to the workspace and project you're testing. Store it in your CI's secret store (GitHub secrets, GitLab variables, CircleCI contexts).
+
+## GitHub Actions
+
+```yaml
+# .github/workflows/scenarios.yml
+name: Mirra scenarios
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: mirra-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Mirra CLI
+        run: npm install -g @mirrahq/cli
+
+      - name: Run scenarios
+        env:
+          MIRRA_TOKEN: ${{ secrets.MIRRA_TOKEN }}
+        run: |
+          mirra run scenarios/*.md \
+            --runs=3 \
+            --fail-below=0.9 \
+            --json > mirra-result.json
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirra-result
+          path: mirra-result.json
+          retention-days: 30
+```
+
+Breakdown:
+
+- **`concurrency` block** — kills the previous run on the same PR when a new commit lands. Important because scenario runs burn minutes.
+- **`--runs=3`** — executes every scenario three times for statistical satisfaction. Don't drop below 2; don't go above 5 unless you've got a flake problem to quantify.
+- **`--fail-below=0.9`** — PR fails if fewer than 90% of criteria pass across runs. Tune per repo: stricter for infrastructure, looser for rapidly-changing integration code.
+- **`--json` output** — machine-readable, easy to parse in downstream steps, easy to archive.
+- **`if: always()` on artifact upload** — uploads the result even on job failure so you can inspect.
+
+## GitLab CI
+
+```yaml
+# .gitlab-ci.yml
+stages: [test]
+
+mirra-scenarios:
+  stage: test
+  image: node:20-alpine
+  timeout: 20 minutes
+  interruptible: true
+
+  variables:
+    npm_config_cache: .npm
+
+  cache:
+    paths:
+      - .npm
+
+  before_script:
+    - npm install -g @mirrahq/cli
+
+  script:
+    - mirra run scenarios/*.md --runs=3 --fail-below=0.9 --json > mirra-result.json
+
+  artifacts:
+    when: always
+    paths:
+      - mirra-result.json
+    expire_in: 30 days
+
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+```
+
+`MIRRA_TOKEN` goes in **Settings → CI/CD → Variables** as a protected, masked variable.
+
+## CircleCI
+
+```yaml
+# .circleci/config.yml
+version: 2.1
+
+jobs:
+  scenarios:
+    docker:
+      - image: cimg/node:20.10
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Install Mirra CLI
+          command: npm install -g @mirrahq/cli
+      - run:
+          name: Run scenarios
+          command: |
+            mirra run scenarios/*.md \
+              --runs=3 \
+              --fail-below=0.9 \
+              --json > mirra-result.json
+      - store_artifacts:
+          path: mirra-result.json
+          destination: mirra
+
+workflows:
+  test:
+    jobs:
+      - scenarios:
+          context: mirra
+```
+
+`MIRRA_TOKEN` lives in a CircleCI **context** named `mirra`, restricted to the scenarios job.
+
+## Patterns that work
+
+### Fail-below per scenario, not per-suite
+
+For critical scenarios, split them out and gate stricter:
+
+```bash
+# Critical — gate at 95%
+mirra run scenarios/payment-flow.md --runs=5 --fail-below=0.95
+
+# Everything else — gate at 80%
+mirra run scenarios/*.md --runs=3 --fail-below=0.8
+```
+
+This catches "payment-flow.md silently regressed" while letting the long tail run without halting CI on every flake.
+
+### Cache warm sessions across jobs
+
+If a single workflow runs scenarios across many jobs, reuse a session:
+
+```yaml
+- name: Start session
+  run: mirra up --mirrors=stripe,resend,twilio --json > session.json
+
+- name: Run scenario set A
+  run: mirra run scenarios/a/*.md --session=$(jq -r .sessionId session.json)
+
+- name: Run scenario set B
+  run: mirra run scenarios/b/*.md --session=$(jq -r .sessionId session.json)
+
+- name: End session
+  if: always()
+  run: mirra down --session=$(jq -r .sessionId session.json)
+```
+
+Cuts provisioning overhead from N × 2s to 1 × 2s per job.
+
+### Post the satisfaction score to the PR
+
+Parse the JSON and comment on the PR:
+
+```yaml
+- name: Post score
+  uses: actions/github-script@v7
+  with:
+    script: |
+      const result = JSON.parse(require('fs').readFileSync('mirra-result.json'));
+      const body = `🪞 **Mirra scenarios** — satisfaction score: **${Math.round(result.satisfactionScore * 100)}%**\n\n` +
+                   result.criteria.map(c => `- ${c.passed === c.total ? '✅' : '❌'} ${c.label} (${c.passed}/${c.total})`).join('\n');
+      await github.rest.issues.createComment({
+        issue_number: context.issue.number,
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        body,
+      });
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Provisioning is slow">
+    Cold start is sub-2s; warm start is ~2s when the session-cache hits. If you're consistently seeing 5s+ starts, your workflow isn't hitting the cache — check that `mirrors`, `seeds`, and workspace are stable between runs.
+  </Accordion>
+  <Accordion title="PR fails with 'minutes exhausted'">
+    You've hit your plan's monthly minute cap. Either upgrade or reduce `--runs`. Overage billing is enabled by default — see [pricing](https://mirra.run/pricing).
+  </Accordion>
+  <Accordion title="Scenario randomly fails in CI but passes locally">
+    Almost always a timing issue. Bump `timeout:` in the scenario's `## Config`, or add `resetBetweenTests: true` if you're running inside Vitest.
+  </Accordion>
+  <Accordion title="Need to pin mirror versions for deterministic runs">
+    Add `mirror-version:` to each scenario's `## Config`. See [Fidelity — versioning](/concepts/fidelity#versioning).
+  </Accordion>
+</AccordionGroup>
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="First scenario" icon="file-lines" href="/guides/first-scenario">
+    Write the scenario CI will run.
+  </Card>
+  <Card title="mirra run reference" icon="play" href="/cli/run">
+    Every flag, every exit code.
+  </Card>
+</Columns>

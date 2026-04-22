@@ -1,0 +1,194 @@
+---
+title: Write your first scenario
+description: From a blank markdown file to a passing CI gate in ten minutes.
+---
+
+This guide builds a real scenario end-to-end. You'll write a markdown file, run it with the CLI, interpret the satisfaction score, and wire it into CI.
+
+We'll test a welcome-email flow against the Resend mirror. The same pattern works for any mirror.
+
+## What we're testing
+
+Imagine your application has a signup endpoint that sends a welcome email via Resend. A passing test needs to prove that:
+
+1. An email was actually created in Resend (not just that the SDK call returned).
+2. The `from` address matches the configured sender.
+3. The webhook for delivery confirmation arrived.
+4. The webhook signature was verified.
+5. The subject line is reasonable.
+6. Bounces are handled.
+
+The first four are mechanical — you can count emails, check strings, count webhooks. The last two are subjective — "reasonable subject" and "handles bounces gracefully" aren't something a test with `expect(…).toBe(…)` can verify cleanly.
+
+That's exactly the `check:` vs `judge:` split.
+
+## 1. Write the scenario
+
+Create `scenarios/welcome-email.md`:
+
+```markdown
+# Send Welcome Email on Signup
+
+## Setup
+A Resend account with one verified domain `mail.acme.com` and no emails
+sent yet.
+
+## Prompt
+When a user signs up with email `alice@example.com`, send a welcome email
+from `hello@mail.acme.com` with subject "Welcome to Acme" and track
+delivery status via webhook.
+
+## Expected Behavior
+The integration should create the email via the Resend API, receive an
+`email.sent` webhook immediately, then `email.delivered` within a few
+seconds. Bounces should mark the user's email as invalid.
+
+## Success Criteria
+- check: Exactly 1 email is created in the Resend mirror
+- check: The email's `from` address is `hello@mail.acme.com`
+- check: The email's `to` includes `alice@example.com`
+- check: At least 1 `email.sent` webhook was received by the handler
+- check: The webhook signature was verified
+- judge: The subject and body are appropriate for a welcome email
+- judge: Error handling for bounces is implemented in the code
+
+## Config
+mirrors: resend
+timeout: 60
+runs: 3
+```
+
+That's the whole scenario. Every section is explained in the [scenario format reference](/reference/scenario-format).
+
+## 2. Run it
+
+```bash
+$ mirra run scenarios/welcome-email.md
+
+→ provisioning resend mirror…
+✓ session ses_a7k2 ready in 1.8s
+
+→ run 1/3
+  ✓ Exactly 1 email is created in the Resend mirror
+  ✓ The email's from address is hello@mail.acme.com
+  ✓ The email's to includes alice@example.com
+  ✓ At least 1 email.sent webhook was received
+  ✓ The webhook signature was verified
+  ✓ Subject and body appropriate for a welcome email
+  ✗ Error handling for bounces is implemented
+
+→ run 2/3
+  …
+
+satisfaction score: 86% (18/21 criteria passed across 3 runs)
+
+per-criterion:
+  ✓ Exactly 1 email is created in the Resend mirror         3/3
+  ✓ The email's from address is hello@mail.acme.com          3/3
+  ✓ The email's to includes alice@example.com                3/3
+  ✓ At least 1 email.sent webhook was received               3/3
+  ✓ The webhook signature was verified                       3/3
+  ✓ Subject and body appropriate                             3/3
+  ✗ Error handling for bounces is implemented                0/3
+```
+
+## 3. Read the score
+
+86% means 18 of 21 criteria passes. Five `check:` criteria ran 3 times each and all passed — that's deterministic, not a coincidence. One `judge:` criterion passed all 3 — the subject line is fine. One `judge:` criterion failed all 3 — bounce handling is missing.
+
+The **3/3 vs 0/3 pattern matters**: if bounces are sometimes handled and sometimes not, the evaluator would show `1/3` or `2/3`, and you'd know it's flaky code. A clean `0/3` means it's genuinely missing.
+
+## 4. Fix the failing criterion
+
+Add bounce handling to your webhook route:
+
+```typescript
+app.post('/webhooks/resend', async (req, res) => {
+  const event = req.body;
+
+  // Verify signature (already working — hence the check: pass)
+  const valid = verifyResendSignature(req.headers, req.rawBody);
+  if (!valid) return res.status(400).send('invalid signature');
+
+  if (event.type === 'email.bounced') {
+    await markEmailInvalid(event.data.to);
+    logger.warn({ email: event.data.to, reason: event.data.bounce.reason },
+      'bounced email — flagged user');
+  }
+
+  res.status(200).send('ok');
+});
+```
+
+Re-run:
+
+```bash
+$ mirra run scenarios/welcome-email.md
+
+satisfaction score: 100% (21/21 criteria passed across 3 runs)
+```
+
+## 5. Wire it into CI
+
+GitHub Actions example:
+
+```yaml
+name: Integration scenarios
+
+on: [push, pull_request]
+
+jobs:
+  scenarios:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install CLI
+        run: npm install -g @mirrahq/cli
+
+      - name: Run scenarios
+        env:
+          MIRRA_TOKEN: ${{ secrets.MIRRA_TOKEN }}
+        run: |
+          mirra run scenarios/*.md \
+            --runs=3 \
+            --fail-below=0.9 \
+            --json > mirra-result.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mirra-result
+          path: mirra-result.json
+```
+
+`--fail-below=0.9` exits the job non-zero if satisfaction drops below 90% — your PR fails CI, and the `mirra-result.json` artifact is attached for inspection.
+
+## 6. Iterate
+
+As your code changes, keep the scenario tight to what you actually promise users:
+
+- Add `check:` lines for new assertions you can mechanically verify.
+- Use `judge:` sparingly and only for genuinely subjective calls.
+- Increase `runs:` if you want tighter confidence; decrease if CI is slow.
+- Split one bloated scenario into several focused ones — `welcome-email.md`, `bounce-handling.md`, `quota-exceeded.md` — each gating what it gates.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Scenario format reference" icon="book-open" href="/reference/scenario-format">
+    Every valid section, every config key.
+  </Card>
+  <Card title="Coding agents + MCP" icon="sparkles" href="/guides/coding-agents-mcp">
+    Let Claude Code or Cursor drive scenarios directly.
+  </Card>
+  <Card title="Vitest plugin" icon="vial" href="/guides/vitest-plugin">
+    Drive scenarios from an existing Vitest suite.
+  </Card>
+  <Card title="mirra run reference" icon="play" href="/cli/run">
+    Every flag, every exit code, every output format.
+  </Card>
+</Columns>

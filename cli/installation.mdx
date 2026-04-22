@@ -1,0 +1,136 @@
+---
+title: Installation
+description: Install the Mirra CLI, authenticate, and verify.
+---
+
+The Mirra CLI is a single binary distributed through npm. It installs on macOS, Linux, and Windows (WSL supported, native PowerShell supported).
+
+## Requirements
+
+- **Node.js 20 or later**
+- **npm, pnpm, or yarn** — any package manager that can install global binaries
+- **An access token** for real mirror provisioning (the CLI itself installs without one; [request access](https://mirra.run/access))
+
+## Install
+
+<Tabs>
+  <Tab title="npm (global)">
+    ```bash
+    npm install -g @mirrahq/cli
+    ```
+  </Tab>
+  <Tab title="pnpm (global)">
+    ```bash
+    pnpm add -g @mirrahq/cli
+    ```
+  </Tab>
+  <Tab title="yarn (global)">
+    ```bash
+    yarn global add @mirrahq/cli
+    ```
+  </Tab>
+  <Tab title="npx (no install)">
+    ```bash
+    npx @mirrahq/cli up
+    ```
+
+    Works fine for one-off runs. For regular use, global install is faster.
+  </Tab>
+</Tabs>
+
+Verify:
+
+```bash
+$ mirra --version
+mirra 0.1.0
+
+$ mirra --help
+mirra — drop-in mirrors for application infrastructure
+
+USAGE
+  mirra <command> [options]
+
+COMMANDS
+  up              Provision mirrors for the current project
+  down            Tear down a session
+  run <file>     Execute a scenario
+  reset           Reset mirror state in-session
+  login           Authenticate this machine
+  logout          Clear credentials
+  doctor          Diagnose CLI and environment issues
+```
+
+The `mirra` binary has a short alias `mr` — either works.
+
+## Authenticate
+
+```bash
+$ mirra login
+→ opening https://app.mirra.run/cli/auth in your browser…
+✓ authenticated as you@acme.com
+
+credentials stored at ~/.config/mirra/credentials (chmod 0600)
+```
+
+The browser flow returns an access token to the local CLI. The token is scoped to your workspace and your user, expires after 30 days, and auto-refreshes on each command.
+
+### Non-interactive auth
+
+For CI or scripted environments, set `MIRRA_TOKEN` directly:
+
+```bash
+export MIRRA_TOKEN=mt_pat_...
+mirra up
+```
+
+Personal access tokens are issued from [app.mirra.run/settings/tokens](https://app.mirra.run/settings/tokens). Give them a descriptive name (e.g., `github-actions-acme-monorepo`) and a scope (workspace-wide or project-specific).
+
+## Verify end-to-end
+
+With the CLI installed and authenticated, `mirra doctor` exercises the control plane round-trip:
+
+```bash
+$ mirra doctor
+
+cli version        0.1.0                          ✓
+node version       20.10.0                        ✓
+credentials        valid for you@acme.com         ✓
+control plane      https://api.mirra.run          ✓ (142ms)
+data plane         *.mirra.run                    ✓ (DNS ok)
+tls proxy          /usr/local/bin/mirra-proxy     ✓
+workspace          acme-prod                      ✓
+plan               pro                            ✓
+minutes used       234 / 1000 this month          ✓
+
+all checks passed.
+```
+
+If anything fails, `mirra doctor` prints exactly what to fix.
+
+## Upgrade
+
+```bash
+npm install -g @mirrahq/cli@latest
+```
+
+Old sessions keep running on their pinned mirror versions — upgrading the CLI never affects live sessions. See [Fidelity — versioning](/concepts/fidelity#versioning) for how mirror versions evolve.
+
+## Uninstall
+
+```bash
+npm uninstall -g @mirrahq/cli
+rm -rf ~/.config/mirra
+```
+
+Removes the binary and clears local credentials. Any running sessions continue on the server until they naturally end — tear them down first with `mirra down --all` if you want a clean slate.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="mirra up" icon="arrow-up" href="/cli/up">
+    Provision your first session.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    End-to-end: install, authenticate, first mirror in 2 minutes.
+  </Card>
+</Columns>

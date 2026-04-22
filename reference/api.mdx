@@ -1,0 +1,336 @@
+---
+title: HTTP API
+description: Mirra's control-plane HTTP API — sessions, scenarios, runs, webhooks, events.
+---
+
+Mirra's control plane is a REST API at `https://api.mirra.run`. Everything the CLI does maps to an API call — and everything the dashboard shows is read through the same API.
+
+This page is the bare surface. The CLI and the Vitest plugin wrap it with better UX; reach for the raw API only when you're building a custom integration.
+
+## Authentication
+
+All requests require a bearer token:
+
+```http
+Authorization: Bearer mt_pat_...
+```
+
+Tokens are issued from [app.mirra.run/settings/tokens](https://app.mirra.run/settings/tokens). Scope them to a workspace (not global) and give them a descriptive name.
+
+## Base URL
+
+```
+https://api.mirra.run
+```
+
+All endpoints are HTTPS. Rate limits apply per workspace, documented in response headers:
+
+```http
+x-mirra-ratelimit-limit: 600
+x-mirra-ratelimit-remaining: 597
+x-mirra-ratelimit-reset: 1713802534
+```
+
+## Sessions
+
+### Create a session
+
+```http
+POST /v1/sessions
+Authorization: Bearer mt_pat_...
+Content-Type: application/json
+
+{
+  "mirrors": ["stripe", "resend", "twilio"],
+  "seeds": {
+    "stripe": "subscription-lifecycle"
+  },
+  "persistent": false,
+  "name": "ci-run-42",
+  "timeoutSeconds": 3600
+}
+```
+
+<ParamField path="mirrors" type="string[]" required>
+  Mirrors to provision. Must be names from the [mirror catalog](/mirrors/overview).
+</ParamField>
+
+<ParamField path="seeds" type="object">
+  Map of mirror name → fixture name. Mirrors not listed use their default `empty` fixture.
+</ParamField>
+
+<ParamField path="persistent" type="boolean" default="false">
+  Create a persistent session. Requires the Team plan or higher.
+</ParamField>
+
+<ParamField path="name" type="string">
+  Human-readable session name. Required for persistent sessions. Ephemeral sessions auto-generate one if omitted.
+</ParamField>
+
+<ParamField path="timeoutSeconds" type="integer" default="3600">
+  Ephemeral-session auto-expire. Capped at your plan's max session length.
+</ParamField>
+
+Response:
+
+<ResponseField name="sessionId" type="string">
+  Session identifier like `ses_a7k2`.
+</ResponseField>
+
+<ResponseField name="status" type="enum">
+  `provisioning` initially, `ready` when all mirrors are up, `failed` on provisioning error.
+</ResponseField>
+
+<ResponseField name="mirrors" type="object[]">
+  One entry per provisioned mirror with `vendor`, `url`, and mirror `version`.
+</ResponseField>
+
+<ResponseField name="createdAt" type="timestamp" />
+
+<ResponseField name="expiresAt" type="timestamp">
+  For ephemeral sessions only.
+</ResponseField>
+
+Example success body:
+
+```json
+{
+  "sessionId": "ses_a7k2",
+  "status": "ready",
+  "mirrors": [
+    { "vendor": "stripe", "url": "https://stripe-a7k2.mirra.run", "version": "0.7.3" },
+    { "vendor": "resend", "url": "https://resend-a7k2.mirra.run", "version": "0.3.1" },
+    { "vendor": "twilio", "url": "https://twilio-a7k2.mirra.run", "version": "0.4.0" }
+  ],
+  "createdAt": "2026-04-22T18:02:14Z",
+  "expiresAt": "2026-04-22T19:02:14Z"
+}
+```
+
+### Get a session
+
+```http
+GET /v1/sessions/{sessionId}
+```
+
+Returns the same shape as create, plus a `stats` block with request count, webhook count, and error count since creation.
+
+### End a session
+
+```http
+DELETE /v1/sessions/{sessionId}
+```
+
+Tears down ephemeral sessions (state cleared). For persistent sessions, ends the session and archives state — restore via snapshot if you need it back.
+
+### List sessions
+
+```http
+GET /v1/sessions?workspace={workspace_id}&mode=ephemeral&status=ready
+```
+
+Paginated. Default sort: `createdAt desc`.
+
+## Scenarios and runs
+
+### Execute a scenario
+
+```http
+POST /v1/runs
+Content-Type: application/json
+
+{
+  "scenario": {
+    "title": "Send Welcome Email on Signup",
+    "setup": "A Resend account with one verified domain `mail.acme.com`…",
+    "prompt": "When a user signs up with email `alice@example.com`…",
+    "expectedBehavior": "The integration should create the email…",
+    "criteria": [
+      { "tag": "check", "text": "Exactly 1 email is created in the Resend mirror" },
+      { "tag": "judge", "text": "Error handling for bounces is implemented" }
+    ],
+    "config": {
+      "mirrors": ["resend"],
+      "fixture": "resend:transactional-busy",
+      "timeout": 60,
+      "runs": 3
+    }
+  }
+}
+```
+
+Alternatively, send the raw markdown as `scenarioMarkdown` and Mirra parses it server-side:
+
+```http
+POST /v1/runs
+Content-Type: application/json
+
+{
+  "scenarioMarkdown": "# Send Welcome Email on Signup\n\n## Setup\n…"
+}
+```
+
+Response:
+
+```json
+{
+  "runId": "run_9xkp2m",
+  "status": "running",
+  "sessionId": "ses_a7k2",
+  "dashboardUrl": "https://app.mirra.run/runs/run_9xkp2m"
+}
+```
+
+### Get a run
+
+```http
+GET /v1/runs/{runId}
+```
+
+Returns progress while running, final verdict when complete:
+
+```json
+{
+  "runId": "run_9xkp2m",
+  "status": "complete",
+  "scenario": { "title": "Send Welcome Email on Signup" },
+  "satisfactionScore": 0.87,
+  "runs": 3,
+  "criteria": [
+    { "label": "Exactly 1 email is created...", "kind": "check", "passed": 3, "total": 3 },
+    { "label": "Error handling for bounces...", "kind": "judge", "passed": 0, "total": 3 }
+  ],
+  "durationMs": 14812
+}
+```
+
+## Live events
+
+Mirra publishes every request, webhook, state change, and lifecycle event to a per-session event stream. Subscribe via Server-Sent Events:
+
+```http
+GET /v1/sessions/{sessionId}/events
+Accept: text/event-stream
+Authorization: Bearer mt_pat_...
+```
+
+Response (streaming):
+
+```
+event: traffic.request_completed
+data: { "mirror": "resend", "method": "POST", "path": "/emails", "status": 200, "durationMs": 34, "at": "2026-04-22T18:02:18Z" }
+
+event: webhook.dispatched
+data: { "mirror": "resend", "type": "email.sent", "emailId": "em_abc", "at": "2026-04-22T18:02:18.1Z", "signature": "..." }
+
+event: state.changed
+data: { "mirror": "resend", "entity": "email", "entityId": "em_abc", "before": { "status": "queued" }, "after": { "status": "sent" } }
+```
+
+Five event types:
+- `traffic.request_completed` — after every mirror request
+- `webhook.dispatched` — when a webhook fires
+- `state.changed` — when mirror state mutates
+- `session.lifecycle` — start, end, reset, snapshot, restore
+- `evaluation.criterion_graded` — during scenario runs, as each criterion resolves
+
+The Vitest plugin subscribes to this stream under the hood for `waitForWebhook()`.
+
+## Admin endpoints (per mirror)
+
+Every mirror exposes admin endpoints at `/_mirra/*` on its mirror URL (not the control plane):
+
+### Reset state
+
+```http
+POST https://stripe-a7k2.mirra.run/_mirra/state/reset
+Content-Type: application/json
+
+{
+  "seed": "stripe:subscription-lifecycle"
+}
+```
+
+Resets this mirror's state to the seed. `seed` is optional — defaults to whatever seed the session started with.
+
+### Simulate events
+
+```http
+POST https://stripe-a7k2.mirra.run/_mirra/simulate
+Content-Type: application/json
+
+{
+  "event": "invoice.payment_failed",
+  "subscription": "sub_Qzp"
+}
+```
+
+Fires a vendor event as if it occurred naturally. The simulation cascade — state changes, dependent webhooks, timers — runs exactly as it would for the real event. Valid event names are documented on each mirror's page.
+
+### Snapshot and restore (persistent sessions only)
+
+```http
+POST /_mirra/state/snapshot
+→ { "snapshotId": "snap_xyz" }
+
+POST /_mirra/state/restore
+{ "snapshotId": "snap_xyz" }
+```
+
+Snapshots are scoped to the session and the mirror. A 4-mirror session with 10 snapshots uses ~40 snapshot rows; each is a SQLite dump in object storage.
+
+### State dump
+
+```http
+GET https://stripe-a7k2.mirra.run/_mirra/state
+```
+
+Returns the mirror's current state as JSON. Used by the MCP server's introspection tools and by the dashboard's state view.
+
+### Metadata
+
+```http
+GET https://stripe-a7k2.mirra.run/_mirra/metadata
+```
+
+Returns mirror name, version, target vendor API version, supported endpoints, webhook event types.
+
+## Errors
+
+All errors follow a standard shape:
+
+```json
+{
+  "error": {
+    "code": "mirra.session.mirror_not_in_catalog",
+    "message": "Unknown mirror 'github'. Not in the current catalog.",
+    "hint": "See https://mirra.run/docs/mirrors/overview for supported mirrors."
+  }
+}
+```
+
+Standard HTTP codes:
+
+| Code | When |
+| --- | --- |
+| `400` | Bad request — malformed body, invalid parameter |
+| `401` | Missing or invalid token |
+| `402` | Monthly minute quota exhausted and overage disabled |
+| `403` | Token doesn't have permission for this workspace |
+| `404` | Resource (session, run, snapshot) not found |
+| `409` | Conflict — session name already in use, snapshot already exists |
+| `429` | Rate-limited |
+| `500` | Mirra internal error (report to us) |
+| `502` | Upstream mirror host unreachable; retry |
+| `503` | Mirra under maintenance |
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="CLI reference" icon="terminal" href="/cli/installation">
+    The wrapper you probably want instead of raw HTTP.
+  </Card>
+  <Card title="Coding agents + MCP" icon="sparkles" href="/guides/coding-agents-mcp">
+    How the MCP server wraps this same API for agents.
+  </Card>
+</Columns>

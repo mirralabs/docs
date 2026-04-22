@@ -1,0 +1,104 @@
+---
+title: mirra reset
+description: Reset a session's mirrors to their seeded starting state without re-provisioning.
+---
+
+```bash
+mirra reset [flags]
+```
+
+Wipes every mirror in a session back to the seed the session started with. Much faster than tearing down and re-provisioning — typically under 100ms per mirror.
+
+Use it between test cases when you want a clean slate but don't want to pay provisioning cost every time.
+
+## Why it exists
+
+Full session setup costs ~1.8 seconds cold or ~2 seconds warm. For a test suite with 50 integration scenarios, that's 90+ seconds of pure provisioning overhead per run — before a single line of your code executes.
+
+`mirra reset` skips provisioning entirely. It opens the existing SQLite file per mirror, truncates the state tables, reloads the seed, and returns. Target: **sub-100ms per mirror**.
+
+## Common invocations
+
+<CodeGroup>
+```bash Reset current session
+mirra reset
+```
+
+```bash Reset specific session
+mirra reset --session=ses_a7k2
+```
+
+```bash Reset with a different seed
+mirra reset --seed=stripe:subscription-lifecycle
+```
+
+```bash Reset only specific mirrors
+mirra reset --mirrors=stripe,twilio
+```
+</CodeGroup>
+
+## Usage inside tests
+
+The Vitest plugin exposes `resetMirraMirrors()`, which is what it invokes under the hood:
+
+```typescript
+import { beforeEach } from 'vitest';
+import { resetMirraMirrors } from '@mirrahq/vitest';
+
+beforeEach(async () => {
+  await resetMirraMirrors();
+});
+```
+
+Doing this in `beforeEach` gives every test case a pristine mirror state without the cost of a fresh session.
+
+## Flags
+
+<ParamField path="--session" type="string">
+  Session to reset. Defaults to the most recent session on this machine. Accepts session ID (`ses_a7k2`) or name (`staging-acme`).
+</ParamField>
+
+<ParamField path="--mirrors" type="list">
+  Comma-separated list of mirrors to reset. Default is all mirrors in the session. Example: `--mirrors=stripe,twilio`.
+</ParamField>
+
+<ParamField path="--seed" type="string">
+  Override the seed to apply during reset. Default is the seed the session was created with. Example: `--seed=stripe:dunning-active`. Useful when you want to reset to a different starting state mid-session.
+</ParamField>
+
+<ParamField path="--seed-file" type="path">
+  Custom JSON seed file. Takes precedence over `--seed`.
+</ParamField>
+
+<ParamField path="--json" type="boolean" default="false">
+  Emit a JSON result line instead of human-readable output.
+</ParamField>
+
+## What gets reset
+
+- **All mirror state.** SQLite tables truncated and re-seeded.
+- **Webhook subscriptions.** Subscriptions you registered during the session are cleared; the mirror's default subscriptions (if any, per seed) are re-installed.
+- **Rate-limit counters.** Fresh quota.
+- **Idempotency keys.** The mirror forgets keys it saw.
+
+## What does not get reset
+
+- **The session itself.** Session ID, URLs, credentials, and network routing are untouched.
+- **Dashboard traces.** History of prior activity stays in PostgreSQL; the reset is logged as an event (`state.reset`) so you can correlate before/after.
+- **Cached mirror images.** The mirror process keeps running; only its state store is wiped.
+
+## What takes longer than 100ms
+
+- **Large custom seed files.** A 10MB seed JSON re-loads slower than a 100-row built-in fixture. Load time scales with seed size, not mirror count.
+- **Concurrent sessions on the same host.** Reset takes a per-session SQLite lock. If the session is being written to concurrently, reset waits briefly.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Vitest plugin" icon="vial" href="/guides/vitest-plugin">
+    Drop-in integration where resetMirraMirrors() is already wired in.
+  </Card>
+  <Card title="Sessions" icon="box" href="/concepts/sessions">
+    Full session lifecycle reference.
+  </Card>
+</Columns>

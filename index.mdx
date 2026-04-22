@@ -1,97 +1,90 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: Introduction
+description: Drop-in mirrors for Stripe, Resend, Twilio, and the rest of your application infrastructure.
 ---
 
-## Setting up
+Your code talks to ten, twenty, thirty third-party services. Payments, email, SMS, auth, commerce, inference. Every one of them is a surface for bugs — bugs that only surface when a real webhook fires, a real state machine transitions, or a real error payload arrives.
 
-Get your documentation site up and running in minutes.
+Testing that code is the problem Mirra solves.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+## What Mirra is
 
-## Make it yours
+Mirra is a runtime that provides **faithful, stateful mirrors** of the third-party APIs your application depends on. Point your code at a Mirra URL instead of the real vendor and it behaves identically — same webhook signatures, same state machine transitions, same error payloads, same idempotency enforcement — but without the real-world side effects.
 
-Design a docs site that looks great and empowers your users.
+No money charged. No messages sent. No emails delivered. No accounts polluted.
+
+```bash
+$ npx @mirrahq/cli up
+
+→ detected: stripe, resend, twilio
+→ provisioning mirrors…
+✓ stripe    → https://stripe-a7k2.mirra.run
+✓ resend    → https://resend-a7k2.mirra.run
+✓ twilio    → https://twilio-a7k2.mirra.run
+
+session ses_a7k2 ready in 1.8s
+```
+
+Your Stripe SDK client, pointed at `stripe-a7k2.mirra.run`, sees a real running implementation of Stripe's API. Create a customer — they stay created. Cancel a subscription — webhooks fire on the correct schedule, signed with HMAC-SHA256 using the exact scheme Stripe uses.
+
+## What makes a mirror different from a mock
+
+A mock returns a hardcoded response. A mirror runs a real process with real state.
 
 <Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+  <Card title="Stateful" icon="database">
+    Every session gets its own SQLite database. Records you create persist. State machines transition on the right schedule. Nothing is hardcoded.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Faithful" icon="shield-check">
+    Vendor-correct webhook signatures. Vendor-correct error payloads. Vendor-correct rate limits. Byte-for-byte parity, verified weekly against the live API.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Isolated" icon="boxes-stacked">
+    A thousand parallel CI runs don't see each other. No shared-staging collisions. Teardown is instant.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Drop-in" icon="plug">
+    A TLS proxy routes `api.stripe.com` to the mirror transparently. Your existing SDK clients work without URL changes.
   </Card>
 </Columns>
 
-## Create beautiful pages
+## Three ways to use Mirra
 
-Everything you need to create world-class documentation.
+One runtime, three execution modes:
+
+<Steps>
+  <Step title="mirra up — for local development and staging">
+    Provision mirror URLs and keep them running as long as you need. State accumulates naturally. Reset on demand.
+  </Step>
+  <Step title="mirra run <scenario.md> — for CI and agent validation">
+    Execute a markdown scenario against provisioned mirrors. Get a pass/fail verdict and a satisfaction score. Gate your PR on the result.
+  </Step>
+  <Step title="@mirrahq/vitest — for your existing test suite">
+    Drop a `withMirra()` wrapper into your Vitest config. Your existing tests run against mirrors instead of mocks. Zero code changes.
+  </Step>
+</Steps>
+
+## Who Mirra is for
+
+Mirra is built for engineering teams shipping integration code that touches real vendors — payments, email, SMS, auth, commerce. Teams with 5–50 engineers, 10+ third-party integrations, and increasingly heavy AI-assisted coding via Claude Code, Cursor, or Copilot.
+
+If you've ever shipped a Stripe webhook handler that didn't verify signatures correctly, a Twilio retry loop that didn't back off, or a Resend bounce callback that got silently swallowed — this is built for you.
+
+## Where to go next
 
 <Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the CLI and run your first mirror in under two minutes.
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Scenarios" icon="file-lines" href="/concepts/scenarios">
+    Learn the markdown scenario format and the [D]/[P] evaluation system.
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Coding agents" icon="sparkles" href="/guides/coding-agents-mcp">
+    Wire Claude Code, Cursor, or any MCP-compatible agent into a Mirra session.
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Vitest plugin" icon="vial" href="/guides/vitest-plugin">
+    Drop Mirra into an existing Vitest suite without changing test code.
   </Card>
 </Columns>
 
-## Need inspiration?
-
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  Mirra is in **private beta**. Real usage requires an access request at [mirra.run/access](https://mirra.run/access). These docs are public and work standalone — no account required to read them.
+</Note>

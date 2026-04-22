@@ -1,0 +1,115 @@
+---
+title: Fidelity
+description: How Mirra stays faithful to the real vendor APIs, and what we promise when we drift.
+---
+
+Mirrors are only useful if they match the real vendor. Fidelity is the word we use for that match — how closely a Mirra mirror's behavior matches the live API it's mirroring.
+
+This page describes three things: what we test, how we detect drift, and what we promise when drift happens.
+
+## What fidelity means
+
+A mirror is faithful to a vendor endpoint when, for every request a well-formed SDK client can send, the mirror's response is **indistinguishable from the live vendor's response** in every way the SDK cares about:
+
+- Status code
+- Response body shape and values (where deterministic)
+- Error payload structure and error codes
+- Headers the SDK reads (rate-limit, idempotency, versioning)
+- Webhook event timing and ordering
+- Webhook signature scheme, header name, and signed content
+
+We do not promise that non-observable internal behaviors match — the real Stripe has sharded Postgres tables; the Stripe mirror has one SQLite file per session. That's fine. The surface matches.
+
+## The fidelity test suite
+
+Every mirror ships with an automated fidelity test suite. Each test is a captured real-API request/response fixture, recorded against the live vendor, replayed on every commit and every release.
+
+```bash
+$ mirra fidelity run --mirror=resend
+
+→ loading 142 captured fixtures
+✓ POST /emails (happy path)             200  match
+✓ POST /emails (invalid from)           422  match
+✓ GET  /emails/:id                      200  match
+✓ POST /domains                         201  match
+✓ webhook.email.sent signature          HMAC match
+…
+
+142/142 fixtures passed.  weekly-drift: 0 diffs found.
+```
+
+Fixtures cover happy paths, validation failures, rate-limit responses, webhook signing, and state-machine transitions.
+
+## Drift detection
+
+Fixtures catch bugs we introduce. They don't catch bugs vendors introduce — when Stripe adds a field, changes an error code, or modifies a webhook signature, our existing fixtures still pass.
+
+We run a second job on a weekly cadence against live vendors:
+
+- Fetch an authoritative response from the real API.
+- Diff it against the mirror's response to the same request.
+- Flag any divergence in status, body, header, or webhook payload.
+
+Every drift found is logged as a public issue on the Mirra status page and triaged by the mirror owner.
+
+## The public SLA
+
+When drift is detected, we commit to two things:
+
+<Columns cols={2}>
+  <Card title="7 days to detect" icon="magnifying-glass">
+    Every mirror is diffed against the live vendor at least once every 7 days. New vendor API changes surface within that window — nothing older.
+  </Card>
+  <Card title="14 days to fix (critical)" icon="wrench">
+    Critical drift — anything that changes a webhook signature, an error code SDKs pattern-match on, or a state-machine transition — ships a fix within 14 days.
+  </Card>
+</Columns>
+
+Non-critical drift (cosmetic field changes, new optional fields, deprecations without behavior change) is tracked but not on a fixed SLA.
+
+Both commitments are published on [status.mirra.run](https://status.mirra.run). Every mirror's page shows:
+
+- Last drift scan timestamp
+- Open drift issues (with severity)
+- Mirror version and its current target vendor API date
+
+## Versioning
+
+Every mirror has a version (`stripe@0.7.3`) and a target vendor API version it mirrors (`stripe API 2024-06-20`). The version pair is exposed to your SDK in a `x-mirra-version` response header:
+
+```http
+x-mirra-version: stripe@0.7.3 · api=2024-06-20
+```
+
+When a vendor ships a breaking API version, we ship a new mirror version targeting it. Your session can pin to a specific version in `## Config`:
+
+```markdown
+## Config
+mirrors: stripe
+mirror-version: stripe@0.7.3
+```
+
+By default sessions get the latest stable mirror version for each requested vendor.
+
+## Gaps we document
+
+No mirror is 100%. We explicitly document what each mirror does **not** yet cover — endpoints not implemented, webhook types not modeled, behaviors approximated rather than replayed.
+
+Every mirror's page under [Mirrors](/mirrors/overview) has a "Coverage" section listing what works, what's pending, and what's out of scope.
+
+## What this means for you
+
+- The mirror you use today will not silently change behavior on you. You'll see a version bump.
+- If the real vendor changes, you'll see an SLA-tracked fix — or a known-drift marker on the mirror's status page if the change is still in flight.
+- You can pin versions for deterministic CI and bump deliberately.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Mirror catalog" icon="grid" href="/mirrors/overview">
+    The current fidelity state of every mirror we ship.
+  </Card>
+  <Card title="Status page" icon="signal" href="https://status.mirra.run">
+    Live drift status, open issues, and SLA commitments.
+  </Card>
+</Columns>

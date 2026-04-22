@@ -1,80 +1,115 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Install the CLI and run your first mirror in under two minutes.
 ---
 
-## Get started in three steps
-
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This is the fastest path from zero to a working mirror. Five steps, two minutes, no sign-in required for the CLI install.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Mirra is in private beta. The steps below work today — the CLI installs, a local stub runs, and `mirra up` provisions test mirrors. To provision real mirrors against the hosted control plane you need an access token — [request one here](https://mirra.run/access).
 </Note>
+
+## 1. Install the CLI
+
+<Tabs>
+  <Tab title="npm">
+    ```bash
+    npm install -g @mirrahq/cli
+    ```
+  </Tab>
+  <Tab title="pnpm">
+    ```bash
+    pnpm add -g @mirrahq/cli
+    ```
+  </Tab>
+  <Tab title="npx (no install)">
+    ```bash
+    npx @mirrahq/cli up
+    ```
+  </Tab>
+</Tabs>
+
+Verify:
+
+```bash
+$ mirra --version
+mirra 0.1.0
+```
+
+## 2. Authenticate
+
+```bash
+$ mirra login
+→ opening https://app.mirra.run/cli/auth in your browser…
+✓ authenticated as you@acme.com
+```
+
+The CLI stores your access token in `~/.config/mirra/credentials`. Log out any time with `mirra logout`.
+
+## 3. Boot your first session
+
+Run `mirra up` from any project directory:
+
+```bash
+$ cd ~/projects/acme-app
+$ mirra up
+
+→ detected: stripe, resend, twilio
+→ provisioning mirrors…
+✓ stripe    → https://stripe-a7k2.mirra.run
+✓ resend    → https://resend-a7k2.mirra.run
+✓ twilio    → https://twilio-a7k2.mirra.run
+
+session ses_a7k2 ready in 1.8s
+
+Your code's requests to api.stripe.com, api.resend.com, and
+api.twilio.com are now routed to the mirrors above.
+Press Ctrl-C to end the session.
+```
+
+Mirra reads your `package.json`, detects the vendor SDKs you depend on, and provisions a mirror for each. A short-lived TLS proxy routes `api.stripe.com`, `api.resend.com`, and `api.twilio.com` to the mirror URLs transparently — **your existing SDK clients don't need URL changes**.
+
+## 4. Make a request
+
+In a second terminal, use your application as normal:
+
+```bash
+$ node -e "
+  const Stripe = require('stripe');
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+  stripe.customers.create({ email: 'alice@test.com' })
+    .then(c => console.log('customer', c.id));
+"
+customer cus_test_a7k2_Nx9kKp
+```
+
+The customer was created — in the mirror. Your session terminal shows the request land in real time.
+
+The real `api.stripe.com` was never called. No real money. No real account state. Yet the SDK client behaved identically: request shape, response shape, latency profile, error model.
+
+## 5. End the session
+
+Ctrl-C in the session terminal. Ephemeral mirrors tear down instantly; their state is gone.
+
+```
+^C
+→ ending session ses_a7k2
+✓ mirrors stopped · state cleared
+```
+
+## What to explore next
+
+<Columns cols={2}>
+  <Card title="Run a scenario" icon="file-lines" href="/guides/first-scenario">
+    Write a markdown scenario and run it with `mirra run scenario.md`.
+  </Card>
+  <Card title="Drop into Vitest" icon="vial" href="/guides/vitest-plugin">
+    Wrap your existing tests with `withMirra()` — zero code changes to the tests themselves.
+  </Card>
+  <Card title="Wire up your coding agent" icon="sparkles" href="/guides/coding-agents-mcp">
+    Point Claude Code or Cursor at Mirra's MCP server.
+  </Card>
+  <Card title="Understand mirrors" icon="database" href="/concepts/mirrors">
+    How mirrors differ from mocks, sandbox modes, and shared staging.
+  </Card>
+</Columns>

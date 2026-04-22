@@ -1,0 +1,117 @@
+---
+title: Sessions
+description: One provisioned set of mirrors with isolated state. Ephemeral or persistent.
+---
+
+A session is **one provisioned set of mirror instances with isolated state**. Every session has an ID (`ses_a7k2`), a workspace, a creator, a mode, and its own SQLite database per mirror.
+
+Everything you do in Mirra happens inside a session.
+
+## The two session modes
+
+<Columns cols={2}>
+  <Card title="Ephemeral" icon="clock">
+    Spins up when your test run starts. Tears down when the run ends. Sub-2-second cold start, ~2-second warm start via session caching. Designed for local dev, CI, agent runs.
+  </Card>
+  <Card title="Persistent" icon="server">
+    Runs 24/7 behind your staging environment. State accumulates naturally as your team uses it. Reset on demand. Snapshot before a risky change.
+  </Card>
+</Columns>
+
+Both modes share the same engine, the same scenario system, the same dashboard, the same event bus. The only difference is lifecycle: when does the session end?
+
+### Ephemeral sessions
+
+Ephemeral is the default. Example lifecycle:
+
+```
+mirra up                            ← session created
+  (your test run happens)
+mirra down / Ctrl-C / timeout       ← session ends, state cleared
+```
+
+Ephemeral sessions:
+
+- **Auto-expire** after their `timeout` (default 60 minutes, max depends on your plan).
+- **Clear all state** on teardown — SQLite files deleted, webhook subscriptions dropped, caches flushed.
+- **Cost minutes, not sessions.** You pay per minute of uptime. See [Pricing](https://mirra.run/pricing).
+- **Cache on hash.** If you run the same workspace + mirrors + seeds combination twice in quick succession, Mirra reuses a cached image — warm start is ~2 seconds instead of cold-start's sub-2-second provisioning.
+
+Use ephemeral for every workflow except 24/7 staging.
+
+### Persistent sessions
+
+Persistent sessions live 24/7. Example lifecycle:
+
+```
+mirra up --persistent --name=staging-acme     ← once
+  (staging environment points at these URLs indefinitely)
+mirra reset --session=staging-acme            ← wipe when you want a clean slate
+mirra snapshot --session=staging-acme         ← before a risky change
+mirra restore --session=staging-acme --snapshot=snap_xyz
+```
+
+Persistent sessions:
+
+- **Don't auto-expire.** They live until you explicitly tear them down with `mirra down --session=<id>`.
+- **Accumulate state** across however long you run them. Your staging team uses Stripe customers, Resend emails, Twilio messages — they stay where you created them.
+- **Reset on demand.** A single command wipes the session back to its scenario-seeded starting state.
+- **Snapshot and restore.** Freeze a state, experiment on top, roll back if needed.
+- **Team tier and up.** Persistent mode is part of the Team plan's integration surface.
+
+Use persistent for staging, long-running agent evaluation harnesses, or any workflow where state must outlive a single test run.
+
+## Isolation
+
+Sessions do not share state. Ever.
+
+- Two concurrent ephemeral sessions, even for the same workspace and the same vendors, are two separate SQLite databases.
+- A persistent session's state is never visible to an ephemeral session that happens to be running at the same time.
+- A thousand parallel CI runs, each with their own session, are a thousand independent mirror worlds.
+
+Isolation is enforced at the mirror-engine layer. A mirror's route handlers cannot reach out of their session context — the engine hands them a `SessionContext` and all state access flows through it.
+
+## Session IDs
+
+Session IDs are short, lowercase, URL-safe: `ses_a7k2`, `ses_3nxk`, `ses_b9p2`. The suffix is a 4-character random token.
+
+Mirror URLs embed the session ID:
+
+```
+https://stripe-a7k2.mirra.run
+https://resend-a7k2.mirra.run
+https://twilio-a7k2.mirra.run
+```
+
+If you provision two sessions concurrently for the same workspace, you get two different session IDs and two different sets of URLs — they never collide.
+
+## Lifecycle reference
+
+<AccordionGroup>
+  <Accordion title="start">
+    A session is created by `mirra up` (for local dev / staging) or implicitly by `mirra run <scenario.md>` and the Vitest plugin. The control plane picks an available mirror host, provisions each requested mirror, loads seeds, and returns the session ID and URLs to the client.
+  </Accordion>
+  <Accordion title="running">
+    While running, every request to a mirror is traced in PostgreSQL and streamed via Redis Streams. The dashboard shows live traffic. Webhooks fire on each mirror's schedule.
+  </Accordion>
+  <Accordion title="reset">
+    `mirra reset --session=<id>` re-seeds every mirror in the session back to its starting state. Runs in under 100ms per mirror. Useful between test cases when you don't want to pay the provisioning cost of a fresh session.
+  </Accordion>
+  <Accordion title="snapshot and restore (persistent only)">
+    `mirra snapshot` captures a session's current state. `mirra restore --snapshot=<id>` rolls back to it. Snapshots live in object storage scoped to your workspace.
+  </Accordion>
+  <Accordion title="end">
+    `mirra down` for explicit teardown. Timeout-triggered for ephemeral. Control plane deletes the session row, evicts the mirror instances, clears state (ephemeral) or archives it (persistent snapshotted).
+  </Accordion>
+</AccordionGroup>
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Scenarios" icon="file-lines" href="/concepts/scenarios">
+    How a scenario drives a session — seeds, prompts, and evaluation criteria.
+  </Card>
+  <Card title="mirra up" icon="terminal" href="/cli/up">
+    Full reference for the command that creates a session.
+  </Card>
+</Columns>

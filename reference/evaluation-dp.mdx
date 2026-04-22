@@ -1,0 +1,167 @@
+---
+title: check / judge evaluation
+description: How Mirra grades scenario success criteria — the deterministic and probabilistic halves of the evaluator.
+---
+
+Every scenario success criterion is graded either **programmatically** (tagged `check:`) or by an **LLM judge** (tagged `judge:`). This page documents how each works, what each costs, what each can and can't catch.
+
+## The two tags
+
+<Columns cols={2}>
+  <Card title="check — deterministic" icon="square-check">
+    Checked programmatically against mirror state and the session trace. Instant. Free. Exact. The evaluator either finds the thing the criterion describes, or it doesn't.
+  </Card>
+  <Card title="judge — probabilistic" icon="scale-balanced">
+    Checked by an LLM from the trace, final state, and `## Expected Behavior` context. Bounded cost (~$0.0004 per criterion on Haiku). Used for subjective calls a deterministic check can't make cleanly.
+  </Card>
+</Columns>
+
+A criterion either has an explicit tag (`check:` or `judge:`), or Mirra infers one. See [Inference rules](#inference-rules) below.
+
+## How `check:` works
+
+The evaluator has access to:
+
+1. **Mirror state** — full SQLite read of every mirror in the session at the time evaluation runs (right after the scenario finishes).
+2. **Trace** — every request, response, webhook dispatch, state change, and error that happened during the scenario run, stored in PostgreSQL.
+3. **Signature verification log** — the engine tracks every signature verification attempt and whether it succeeded.
+
+`check:` criteria are evaluated with a small deterministic grammar over those three sources. The evaluator understands:
+
+- **Counts** — "Exactly 1 email is created" → counts rows in the mirror's `emails` table.
+- **Existence** — "A webhook endpoint for `invoice.payment_failed` was registered" → queries the endpoint list.
+- **Properties** — "The email's `from` is `hello@mail.acme.com`" → reads the email row, compares the field.
+- **Signature verification** — "The webhook signature was verified" → looks at the trace's `signature_verifications` collection.
+- **Trace events** — "No errors were logged" → counts trace entries with `level >= error`.
+
+If the criterion can be reduced to one of these patterns, it grades deterministically. If the evaluator can't match a pattern, the criterion is escalated to the judge (and logged as an escalation so you can tighten the wording if you want).
+
+### Cost
+
+`check:` criteria are free. They run in under 10ms each and don't call any external API.
+
+## How `judge:` works
+
+A `judge:` criterion is graded by an LLM call with this structure:
+
+```
+You are grading a test criterion for an integration.
+
+### Scenario context
+[## Setup content]
+
+### Expected behavior
+[## Expected Behavior content]
+
+### The criterion
+[criterion text]
+
+### Session trace (relevant excerpts)
+[trace summary — trimmed to relevant events only]
+
+### Final state (relevant excerpts)
+[mirror state summary]
+
+### Your task
+Grade the criterion as PASS or FAIL. If FAIL, explain in one sentence.
+Output JSON: { "result": "pass" | "fail", "explanation": "..." }
+```
+
+The default judge is **Claude Haiku 4.5** via the Anthropic API with zero data retention. Alternatives: `gpt-4o-mini`, `claude-sonnet-4-6`. Configurable per scenario via `judge-model:` in `## Config`.
+
+### Cost
+
+Judge cost is bounded:
+
+- Trace excerpts trimmed to fit ~4K tokens max.
+- Final state trimmed to ~2K tokens max.
+- Typical judge call: ~6K input tokens + ~100 output tokens.
+- At Haiku pricing (Apr 2026): ~$0.0004 per criterion per run.
+
+A scenario with 3 `judge:` criteria × 5 runs = 15 judge calls = ~$0.006 per scenario execution. Fractions of a cent.
+
+### Why probabilistic at all
+
+Two classes of judgment don't reduce to programmatic checks:
+
+1. **Tone and appropriateness** — "the email subject is appropriate for a welcome message" is a judgment, not a pattern match.
+2. **Higher-order existence** — "error handling for bounces is implemented." A deterministic check can count handlers, but it can't tell whether they handle the case usefully.
+
+For these, the LLM call is fundamentally the right tool. The alternative is writing custom Python for every soft check in every scenario — which no team maintains.
+
+## Inference rules
+
+If a criterion has no explicit `check:` or `judge:` prefix, Mirra picks one based on the criterion's wording:
+
+| Signal in criterion | Inferred tag |
+| --- | --- |
+| Contains a number: "exactly 3", "at least 1", "fewer than 5" | `check:` |
+| Contains a concrete value: `hello@mail.acme.com`, `sub_abc` | `check:` |
+| Contains a past-tense event: "was delivered", "was verified", "was created" | `check:` |
+| Contains "no errors", "no signature failures" | `check:` |
+| Contains subjective words: "appropriate", "clear", "graceful", "helpful" | `judge:` |
+| Contains "error handling exists", "correctly handles" without numbers | `judge:` |
+| Multi-condition: "X and the code is well-structured" | `judge:` (the soft half wins) |
+
+You can always override:
+
+```markdown
+- check: The error message is clear   ← forces check (may not grade well)
+- judge: Exactly 3 emails were sent    ← forces judge (wastes tokens on a countable)
+```
+
+The explicit tag wins. The evaluator logs a warning when it thinks you've made a mistake (e.g., forcing `judge:` on something obviously deterministic).
+
+## Writing criteria that grade well
+
+<AccordionGroup>
+  <Accordion title="Be specific about counts and values">
+    ✓ "Exactly 1 email is created with `from` equal to `hello@mail.acme.com`"
+    ✗ "The right email is sent"
+
+    Specific criteria grade as `check:` (free, fast, exact). Vague criteria grade as `judge:` (small cost, LLM-variable answer).
+  </Accordion>
+  <Accordion title="Split compound criteria">
+    ✓ "Exactly 1 email is created" + "The webhook signature was verified"
+    ✗ "An email is created and the webhook is verified"
+
+    One assertion per criterion makes per-criterion pass/fail reporting useful. Compound criteria give you a single binary for two things.
+  </Accordion>
+  <Accordion title="Lean on judge for genuinely soft things, not as a fallback">
+    `judge:` works best for genuine taste calls. Using `judge:` as "I couldn't write a clean check" is a signal your criterion is too vague to be useful — tighten it instead.
+  </Accordion>
+  <Accordion title="Use ## Expected Behavior to help the judge">
+    When you use `judge:`, write a `## Expected Behavior` section that defines what "correct" means. Without it, the judge infers from the criterion text alone, which is usually too thin for stable grading.
+  </Accordion>
+</AccordionGroup>
+
+## Statistical satisfaction
+
+Running a scenario with `runs: N` produces N independent gradings per criterion. The satisfaction score is the mean.
+
+Example — 5 runs, 6 criteria:
+
+```
+per-criterion:
+  ✓ Exactly 1 email is created                5/5   →  check, stable
+  ✓ From address is hello@mail.acme.com        5/5   →  check, stable
+  ✓ Signature was verified                     5/5   →  check, stable
+  ✓ Subject is appropriate for welcome         4/5   →  judge, mostly stable
+  ✓ Error handling is implemented for bounces  3/5   →  judge, flaky
+  ✗ No errors logged                           0/5   →  check, definitely broken
+
+score: 73% (22/30)
+```
+
+Read the per-criterion line too, not just the aggregate — the pattern tells you what to fix.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Scenario format" icon="book-open" href="/reference/scenario-format">
+    Every valid section and config key.
+  </Card>
+  <Card title="First scenario" icon="pen" href="/guides/first-scenario">
+    Write criteria that grade well end-to-end.
+  </Card>
+</Columns>

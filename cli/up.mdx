@@ -1,0 +1,183 @@
+---
+title: mirra up
+description: Provision mirrors for the third parties your code talks to.
+---
+
+```bash
+mirra up [flags]
+```
+
+Detects the vendor SDKs your project depends on, provisions a mirror for each, and routes your code's outbound requests to them. The canonical entry point for local development and staging work.
+
+## How detection works
+
+`mirra up` walks the current directory looking for signals that tell it which vendors you integrate with:
+
+- **`package.json` dependencies** — `stripe`, `@stripe/stripe-node`, `resend`, `twilio`, `@supabase/supabase-js`, etc.
+- **Imports in source** — falls back to grepping `import` / `require` for vendor SDK names when `package.json` is ambiguous.
+- **Environment variables** — `STRIPE_SECRET_KEY`, `RESEND_API_KEY`, `TWILIO_AUTH_TOKEN` as hints.
+
+Detection is additive: the more signals it finds, the more confident it is. You can always override with `--mirrors`.
+
+## Common invocations
+
+<CodeGroup>
+```bash Auto-detect everything
+mirra up
+```
+
+```bash Specify mirrors explicitly
+mirra up --mirrors=stripe,resend,twilio
+```
+
+```bash Persistent staging session
+mirra up --persistent --name=staging-acme
+```
+
+```bash Named seed for all mirrors
+mirra up --mirrors=stripe --seed=stripe:subscription-lifecycle
+```
+
+```bash No TLS proxy (env-var routing)
+mirra up --no-proxy
+```
+</CodeGroup>
+
+## Flags
+
+<ParamField path="--mirrors" type="list">
+  Comma-separated list of mirrors to provision. Overrides auto-detection. Example: `--mirrors=stripe,resend`.
+</ParamField>
+
+<ParamField path="--persistent" type="boolean" default="false">
+  Create a persistent session that lives until explicit teardown. Requires the Team plan or higher. See [Sessions](/concepts/sessions#persistent-sessions).
+</ParamField>
+
+<ParamField path="--name" type="string">
+  Human-readable name for the session. Shown in the dashboard and accepted by `--session=<name>` on subsequent commands. Ephemeral sessions get an auto-generated name if omitted; persistent sessions require one.
+</ParamField>
+
+<ParamField path="--seed" type="string">
+  Apply a named built-in fixture as the starting state for every mirror. Format: `<mirror>:<fixture>`. Example: `--seed=stripe:subscription-lifecycle`. Combine multiple: `--seed=stripe:empty --seed=resend:transactional-busy`.
+</ParamField>
+
+<ParamField path="--seed-file" type="path">
+  Path to a JSON file containing custom seed state. Takes precedence over `--seed`.
+</ParamField>
+
+<ParamField path="--no-proxy" type="boolean" default="false">
+  Skip installing the TLS proxy. Instead, `mirra up` emits env-var overrides (`STRIPE_API_BASE`, `RESEND_API_BASE`, …) on stdout for your code to read. Use this if you can't run a local TLS proxy (locked-down CI runners, some Windows configurations).
+</ParamField>
+
+<ParamField path="--timeout" type="duration" default="60m">
+  Ephemeral-session auto-expire. Accepts `60m`, `2h`, `90m`. Capped by your plan's max session length.
+</ParamField>
+
+<ParamField path="--workspace" type="string">
+  Override the workspace Mirra bills and scopes the session to. Defaults to the workspace encoded in your credentials.
+</ParamField>
+
+<ParamField path="--json" type="boolean" default="false">
+  Emit provisioning results as a single JSON line on stdout instead of the human-readable stream. Useful for scripting.
+</ParamField>
+
+<ParamField path="--quiet" type="boolean" default="false">
+  Suppress the provisioning stream; print only the final session summary.
+</ParamField>
+
+## Request routing
+
+Once a session is up, your code's outbound HTTPS requests are routed to the mirrors one of two ways:
+
+### TLS proxy (default)
+
+`mirra up` installs a short-lived TLS proxy on your machine and adds an entry to `/etc/hosts` (or the Windows equivalent) so that `api.stripe.com` resolves to `127.0.0.1`. The proxy presents a certificate for the vendor's hostname, your SDK validates it (using Mirra's CA that the CLI trusts during `login`), and the request is forwarded to the mirror URL.
+
+**What you get:** your existing SDK clients work without URL changes:
+
+```typescript
+// No code change needed.
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+await stripe.customers.create({ email: 'alice@test.com' });
+// → automatically routed to stripe-a7k2.mirra.run
+```
+
+Cleanup is automatic — when the session ends, the hosts-file entry is removed and the proxy process exits.
+
+### Env-var routing (`--no-proxy`)
+
+If the TLS proxy can't run (locked-down CI, Windows without admin), `--no-proxy` emits base-URL overrides:
+
+```
+$ mirra up --no-proxy
+
+→ detected: stripe, resend
+→ provisioning mirrors…
+✓ session ses_a7k2 ready in 1.8s
+
+  export STRIPE_API_BASE=https://stripe-a7k2.mirra.run
+  export RESEND_API_BASE=https://resend-a7k2.mirra.run
+```
+
+Your code then reads those env vars:
+
+```typescript
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiBase: process.env.STRIPE_API_BASE, // ← falls back to real Stripe if unset
+});
+```
+
+## Output
+
+Human-readable default:
+
+```
+$ mirra up
+
+→ detected: stripe, resend, twilio
+→ provisioning mirrors…
+✓ stripe    → https://stripe-a7k2.mirra.run
+✓ resend    → https://resend-a7k2.mirra.run
+✓ twilio    → https://twilio-a7k2.mirra.run
+
+session ses_a7k2 ready in 1.8s
+dashboard: https://app.mirra.run/sessions/ses_a7k2
+Press Ctrl-C to end the session.
+```
+
+Machine-readable with `--json`:
+
+```json
+{
+  "sessionId": "ses_a7k2",
+  "status": "ready",
+  "createdAt": "2026-04-22T18:02:14Z",
+  "mirrors": [
+    { "vendor": "stripe", "url": "https://stripe-a7k2.mirra.run", "version": "0.7.3" },
+    { "vendor": "resend", "url": "https://resend-a7k2.mirra.run", "version": "0.3.1" },
+    { "vendor": "twilio", "url": "https://twilio-a7k2.mirra.run", "version": "0.4.0" }
+  ],
+  "proxy": { "installed": true, "port": 17420 },
+  "dashboardUrl": "https://app.mirra.run/sessions/ses_a7k2"
+}
+```
+
+## Ending the session
+
+- **Ctrl-C** in the `mirra up` terminal (ephemeral only).
+- **`mirra down`** from any terminal for the most recent session.
+- **`mirra down --session=<id-or-name>`** for an explicit session.
+- **Timeout** — ephemeral sessions auto-end after `--timeout`.
+
+Persistent sessions ignore Ctrl-C in the sense of session life — the CLI exits but the session keeps running. Tear them down explicitly with `mirra down --session=<name>`.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="mirra run" icon="play" href="/cli/run">
+    Execute a scenario against a session.
+  </Card>
+  <Card title="Vitest plugin" icon="vial" href="/guides/vitest-plugin">
+    Drop Mirra into an existing test suite.
+  </Card>
+</Columns>

@@ -1,0 +1,76 @@
+---
+title: Mirrors
+description: What a mirror is, what it isn't, and why that distinction matters.
+---
+
+A mirror is a **running implementation of a vendor's API** that Mirra provides. It runs in Mirra's infrastructure, speaks the same HTTP surface as the real vendor, and behaves identically in the ways your code depends on: webhook signatures, state machine transitions, error payloads, idempotency, rate limits.
+
+It is not a mock. It is not a sandbox. It is a mirror.
+
+## The three things that make it a mirror
+
+<Columns cols={3}>
+  <Card title="Running" icon="bolt">
+    A real process with routing, validation, and persistence. Your SDK client sees a real server.
+  </Card>
+  <Card title="Stateful" icon="database">
+    Per-session SQLite. Records persist. State machines transition. Nothing is faked between requests.
+  </Card>
+  <Card title="Faithful" icon="shield-check">
+    Vendor-correct webhook signing, error payloads, rate-limit shapes. Verified weekly against the live API.
+  </Card>
+</Columns>
+
+## Mirror vs mock
+
+A mock returns a canned response. A mirror runs the vendor's actual protocol.
+
+| Behavior | Mock (MSW, WireMock, Prism) | Mirror (Mirra) |
+| --- | --- | --- |
+| Response body | Hardcoded per call | Computed from state |
+| State between calls | None — each call is independent | Full SQLite DB per session |
+| Webhook dispatch | Does not fire | Fires on vendor's schedule, signed |
+| Idempotency keys | Not enforced | Enforced per vendor spec |
+| State machine | Not modeled | Full lifecycle (e.g., `trialing → active → past_due → canceled`) |
+| Error shapes | Whatever you wrote | Byte-for-byte vendor error payloads |
+| Parallel isolation | Depends on implementation | Guaranteed per-session |
+| Setup cost | Hours-to-days of handwritten handlers | One CLI command, sub-2-second provisioning |
+
+The practical consequence: a mock tells you your code **calls a function**. A mirror tells you your **integration works**.
+
+## Mirror vs vendor test mode
+
+Vendor test modes (Stripe test mode, Twilio test credentials, Resend test API key) are real vendor infrastructure in test-mode. They have three structural limits:
+
+- **Shared state.** Test-mode accounts are shared across your team, polluting each other's runs.
+- **Rate limits.** Hitting Stripe test mode at CI scale trips the same throttles as production.
+- **No fan-out.** There is no unified testing environment for Stripe + Resend + Twilio + Postgres simultaneously — each has its own test harness, each has its own quirks.
+
+Mirra gives you:
+
+- Per-session state isolation — a thousand parallel CI runs can't see each other.
+- No rate limits — your throttle is your Mirra plan's concurrent-session cap, not vendor policy.
+- One surface for every vendor — a single session spans Stripe, Resend, and Twilio together.
+
+## Mirror vs shared staging
+
+Shared staging environments break past five engineers. External integrations either point at real services (expensive, unsafe) or are disabled (no integration coverage).
+
+Mirra's persistent session mode gives you a 24/7 staging environment with real vendor behavior, no real-world bills. See [Sessions](/concepts/sessions) for the ephemeral / persistent split.
+
+## What a mirror is not
+
+- **It is not the real vendor.** No real charges, real messages, real emails, real authentications. If your code somehow reaches `api.stripe.com` instead of `stripe-ses_a7k2.mirra.run`, Mirra cannot stop you — the TLS proxy is advisory. [Read more on request routing](/cli/up#request-routing).
+- **It is not a perfect simulation.** Mirror fidelity is measured against the live vendor on a published SLA ([7 days to detect drift, 14 days to fix critical drift](/concepts/fidelity)). Gaps exist. We document them.
+- **It is not a test framework.** Mirra provides the runtime. You still write scenarios, tests, or let your coding agent drive.
+
+## Where mirrors live
+
+<Columns cols={2}>
+  <Card title="In a session" icon="box" href="/concepts/sessions">
+    One provisioned mirror instance lives inside one session. Session boundaries are the unit of isolation.
+  </Card>
+  <Card title="Per vendor" icon="grid" href="/mirrors/overview">
+    See the full mirror catalog and what each one supports.
+  </Card>
+</Columns>

@@ -1,68 +1,59 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Mirra",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#d65a31",
+    "light": "#e27d56",
+    "dark": "#b34621"
   },
   "favicon": "/favicon.svg",
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Docs",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Start here",
+            "pages": ["index", "quickstart"]
+          },
+          {
+            "group": "Concepts",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "concepts/mirrors",
+              "concepts/sessions",
+              "concepts/scenarios",
+              "concepts/fidelity"
             ]
           },
           {
-            "group": "Customization",
+            "group": "CLI",
+            "pages": ["cli/installation", "cli/up", "cli/run", "cli/reset"]
+          },
+          {
+            "group": "Guides",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "guides/first-scenario",
+              "guides/vitest-plugin",
+              "guides/ci-integration",
+              "guides/coding-agents-mcp"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Mirrors",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "mirrors/overview",
+              "mirrors/stripe",
+              "mirrors/resend",
+              "mirrors/twilio"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Reference",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "API reference",
-        "groups": [
-          {
-            "group": "API documentation",
-            "pages": [
-              "api-reference/introduction"
-            ]
-          },
-          {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "reference/scenario-format",
+              "reference/evaluation-dp",
+              "reference/api"
             ]
           }
         ]
@@ -71,14 +62,19 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
+          "anchor": "Mirra site",
+          "href": "https://mirra.run",
+          "icon": "globe"
+        },
+        {
+          "anchor": "Thesis",
+          "href": "https://mirra.run/thesis",
           "icon": "book-open-cover"
         },
         {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
+          "anchor": "GitHub",
+          "href": "https://github.com/mirrahq",
+          "icon": "github"
         }
       ]
     }
@@ -90,33 +86,23 @@
   "navbar": {
     "links": [
       {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
+        "label": "Request access",
+        "href": "https://mirra.run/access"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
+      "label": "mirra.run",
+      "href": "https://mirra.run"
     }
   },
   "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
+    "options": ["copy", "view", "chatgpt", "claude", "cursor"]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "x": "https://twitter.com/mirradev",
+      "github": "https://github.com/mirrahq"
     }
   }
 }

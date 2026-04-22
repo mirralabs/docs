@@ -1,0 +1,87 @@
+---
+title: Mirror catalog
+description: Every mirror Mirra ships, what each one covers, and the drift state as of today.
+---
+
+Mirra's catalog focus is **application infrastructure** — the vendors your product depends on: payments, email, SMS, auth, commerce, databases, inference.
+
+Each mirror is a real implementation of the vendor's public API running inside Mirra. Every mirror ships with a fidelity test suite, a public drift-detection SLA, and explicit documentation of what it does and doesn't cover.
+
+## Available today
+
+<CardGroup cols={2}>
+  <Card title="Resend" icon="envelope" href="/mirrors/resend">
+    Transactional and broadcast email. Webhook events with Svix-style HMAC signing. Domains, API keys, audiences, contacts.
+  </Card>
+  <Card title="Twilio" icon="message" href="/mirrors/twilio">
+    SMS, MMS, Verify (OTP), phone number management. Status callbacks with HMAC-SHA1 signing. Form-encoded payload shape.
+  </Card>
+</CardGroup>
+
+## Month 2
+
+<CardGroup cols={1}>
+  <Card title="Stripe" icon="credit-card" href="/mirrors/stripe">
+    Customers, subscriptions, payment intents, invoices, products, prices, coupons. Full subscription lifecycle state machine. HMAC-SHA256 webhook signing matching Stripe's exact scheme.
+  </Card>
+</CardGroup>
+
+## Months 3–6 roadmap
+
+- **SendGrid** — transactional email, templates, contacts
+- **Mailgun** — transactional email, routes, mailing lists
+- **Postmark** — transactional email
+- **Plaid** — banking connections, accounts, transactions
+- **Auth0** — authentication, tokens, user management
+- **Clerk** — user management, sessions
+- **Postgres** — ephemeral databases with scenario-seeded state
+- **Redis** — ephemeral instances
+- **S3 / MinIO** — object storage
+- **OpenAI** — chat completions, embeddings with deterministic responses
+- **Anthropic** — messages API with deterministic responses
+
+## Year 1 expansion
+
+- Shopify — storefront API, orders, inventory
+- Mailchimp — audiences, campaigns, automations
+- Intercom — conversations, users, events
+- PostHog — events, feature flags
+
+## What's explicitly **not** on the roadmap
+
+- GitHub (issues, PRs, actions)
+- Slack (messaging, channels)
+- Discord, Jira, Linear
+- Google Workspace / Microsoft 365
+
+These are productivity-tool territory — a different category. If you need mirrors for those, other tools cover that ground.
+
+## Mirror properties — what every mirror has
+
+Every mirror in the catalog ships with:
+
+- **Per-session SQLite** — full state isolation
+- **Vendor-correct webhook signing** — the exact HMAC scheme, header name, and signed-content layout the vendor uses
+- **State machine fidelity** — for entities with lifecycles (subscriptions, messages, emails, auth sessions)
+- **Idempotency** — where the vendor enforces it, the mirror does too
+- **Named built-in fixtures** — curated starting states per mirror (e.g., `resend:transactional-busy`, `stripe:subscription-lifecycle`)
+- **Public fidelity suite** — captured real-API fixtures replayed on every commit
+- **Weekly drift scans** — comparison against the live vendor
+- **Status page entry** — at [status.mirra.run](https://status.mirra.run) with last-scan timestamp and open drift issues
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Resend" icon="envelope" href="/mirrors/resend">
+    The email mirror — available today.
+  </Card>
+  <Card title="Twilio" icon="message" href="/mirrors/twilio">
+    The SMS mirror — available today.
+  </Card>
+  <Card title="Stripe" icon="credit-card" href="/mirrors/stripe">
+    The payments mirror — Month 2.
+  </Card>
+  <Card title="Fidelity" icon="shield-check" href="/concepts/fidelity">
+    How mirrors stay faithful and what we promise when they drift.
+  </Card>
+</CardGroup>

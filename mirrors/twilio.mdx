@@ -1,0 +1,196 @@
+---
+title: Twilio
+description: The Twilio mirror — SMS, Verify (OTP), phone numbers, status callbacks with HMAC-SHA1 signing.
+---
+
+Target vendor: [Twilio REST API](https://www.twilio.com/docs/usage/api). Webhook signing: HMAC-SHA1 with the `X-Twilio-Signature` header. Payloads are form-encoded, matching Twilio's exact format.
+
+## Mirror URL
+
+```
+https://twilio-<session_id>.mirra.run
+```
+
+Example: `https://twilio-a7k2.mirra.run`.
+
+## SDK compatibility
+
+Official Twilio SDKs work against the mirror with zero code changes:
+
+<Tabs>
+  <Tab title="Node">
+    ```typescript
+    import twilio from 'twilio';
+
+    const client = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN,
+    );
+
+    const message = await client.messages.create({
+      from: '+15555550123',
+      to:   '+15555550199',
+      body: 'Your code is 424242.',
+    });
+    // → routed to twilio-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from twilio.rest import Client
+
+    client = Client(
+      os.environ['TWILIO_ACCOUNT_SID'],
+      os.environ['TWILIO_AUTH_TOKEN'],
+    )
+
+    message = client.messages.create(
+      from_='+15555550123',
+      to='+15555550199',
+      body='Your code is 424242.',
+    )
+    # → routed to twilio-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Ruby">
+    ```ruby
+    require 'twilio-ruby'
+
+    client = Twilio::REST::Client.new(
+      ENV['TWILIO_ACCOUNT_SID'],
+      ENV['TWILIO_AUTH_TOKEN'],
+    )
+
+    message = client.messages.create(
+      from: '+15555550123',
+      to:   '+15555550199',
+      body: 'Your code is 424242.',
+    )
+    # → routed to twilio-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Without the TLS proxy">
+    ```typescript
+    import twilio from 'twilio';
+
+    const client = twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN,
+      { region: undefined, edge: undefined },
+    );
+    client.setRequestHost('twilio-a7k2.mirra.run');
+    ```
+  </Tab>
+</Tabs>
+
+## Supported surface
+
+### Resources
+
+<AccordionGroup>
+  <Accordion title="Messages (SMS / MMS)">
+    Send, retrieve, list. Status transitions (`queued → sending → sent → delivered / failed / undelivered`). Media attachments.
+  </Accordion>
+  <Accordion title="Verify (OTP)">
+    Start verification, check verification. Channels: sms, call, email. Code delivery tracking. Retry limits per Twilio's exact policy.
+  </Accordion>
+  <Accordion title="Phone Numbers">
+    Search available numbers, provision, list, release. Capabilities (SMS, MMS, voice). Incoming number configuration.
+  </Accordion>
+  <Accordion title="Messaging Services">
+    Create, update, retrieve. Sender pool management. Country and compliance configuration.
+  </Accordion>
+</AccordionGroup>
+
+### Status callbacks
+
+Twilio fires status callbacks on message state changes. The mirror fires them with vendor-correct HMAC-SHA1 signatures and Twilio's form-encoded payload shape:
+
+- `queued` — on create
+- `sending` — immediately after
+- `sent` — a few seconds later (configurable per fixture)
+- `delivered` — after that
+- `failed` / `undelivered` — if the fixture or simulate triggers it
+
+Signing uses Twilio's exact scheme:
+
+```
+X-Twilio-Signature: HD/vEfkS7yLmBDVE1Lf8C4HHuAE=
+Content-Type: application/x-www-form-urlencoded
+```
+
+Verify with Twilio's SDK, no changes:
+
+```typescript
+import twilio from 'twilio';
+
+const valid = twilio.validateRequest(
+  process.env.TWILIO_AUTH_TOKEN,
+  req.headers['x-twilio-signature'],
+  fullWebhookUrl,
+  req.body,
+);
+```
+
+## Built-in fixtures
+
+<AccordionGroup>
+  <Accordion title="twilio:empty">
+    No phone numbers, no messages. A blank Twilio account.
+  </Accordion>
+  <Accordion title="twilio:verified-numbers">
+    Two verified phone numbers for sending: `+15555550123` and `+15555550124`. Good for testing your outbound flow without provisioning.
+  </Accordion>
+  <Accordion title="twilio:messaging-service">
+    Configured messaging service with a sender pool of 5 numbers. Good for testing services that fan out across sender pools.
+  </Accordion>
+  <Accordion title="twilio:verify-flow">
+    Verify service pre-configured with SMS channel and sensible retry limits. Good for testing OTP flows.
+  </Accordion>
+  <Accordion title="twilio:rate-limited">
+    Account that returns 429 after 10 sends per minute, matching Twilio's trial-account throttle. Good for testing rate-limit handling.
+  </Accordion>
+</AccordionGroup>
+
+Load a fixture:
+
+```bash
+mirra up --mirrors=twilio --seed=twilio:verify-flow
+```
+
+## Coverage gaps
+
+- **Voice / TwiML** — not yet mirrored.
+- **Conversations API** — not yet mirrored.
+- **Studio (workflow builder)** — not yet mirrored.
+- **Twilio SendGrid** — use the SendGrid mirror (Months 3–6 roadmap).
+- **Carrier-specific routing** — simplified to a single delivery timeline per fixture; no real carrier-level behavior.
+
+See [status.mirra.run/twilio](https://status.mirra.run/twilio) for the live list.
+
+## Simulating events
+
+```bash
+# Force a message to fail delivery
+curl -X POST https://twilio-a7k2.mirra.run/_mirra/simulate \
+  -H "Content-Type: application/json" \
+  -d '{ "event": "message.failed", "messageId": "SM_abc", "errorCode": 30003 }'
+
+# Force an OTP check to fail
+curl -X POST https://twilio-a7k2.mirra.run/_mirra/simulate \
+  -H "Content-Type: application/json" \
+  -d '{ "event": "verify.check_failed", "sid": "VE_xyz" }'
+```
+
+See [API reference](/reference/api#simulate) for the full event list.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Resend" icon="envelope" href="/mirrors/resend">
+    The email mirror.
+  </Card>
+  <Card title="Stripe" icon="credit-card" href="/mirrors/stripe">
+    The payments mirror.
+  </Card>
+</Columns>

@@ -1,0 +1,209 @@
+---
+title: Scenario format
+description: The complete grammar of a Mirra scenario file — sections, required fields, config keys.
+---
+
+A scenario is a markdown file. The parser looks for specific headings, treats everything else as ignorable context. This page documents every section, every field, and every edge case.
+
+## Structure at a glance
+
+```markdown
+# Title               ← required
+## Setup              ← optional, seeds state
+## Prompt / ## Task   ← required for agent runs
+## Expected Behavior  ← optional, evaluator context
+## Success Criteria   ← required (alias: Checks)
+## Config             ← optional, defaults apply
+```
+
+Headings must be H1 for the title and H2 for the sections. Case doesn't matter (`## Setup` and `## setup` both work). Order doesn't matter — the parser looks up sections by heading, not position.
+
+## `# Title`
+
+The human-readable scenario name. Used in dashboard listings and in log output.
+
+```markdown
+# Send Welcome Email on Signup
+```
+
+**Required.** Must be an H1. Must be the only H1 in the file.
+
+## `## Setup`
+
+Plain-English description of the starting state. Parsed by a small LLM that emits seed state directly to the mirror. Also included in the agent's prompt as context.
+
+```markdown
+## Setup
+A Resend account with one verified domain `mail.acme.com` and 50 sent
+emails across the last 30 days, with a 5% bounce rate.
+```
+
+**Optional.** If omitted, the seed falls back to `mirrors:` default — usually an empty fixture unless the scenario's `## Config` says otherwise.
+
+## `## Prompt` / `## Task`
+
+The instruction shown to the driver (agent, test, or custom script). Both names work — `## Prompt` is canonical, `## Task` is an alias.
+
+```markdown
+## Prompt
+When a user signs up with email `alice@example.com`, send a welcome email
+from `hello@mail.acme.com` with subject "Welcome to Acme" and track
+delivery status via webhook.
+```
+
+**Required for agent runs.** Can be omitted when the driver is a test-suite or custom script (in which case the driver has the logic built in).
+
+## `## Expected Behavior`
+
+Context for the evaluator only — not shown to the agent or test. Use this to document the behavior you want so the LLM-judge has ground truth when grading `judge:` criteria.
+
+```markdown
+## Expected Behavior
+The integration should create the email via the Resend API, receive an
+`email.sent` webhook immediately, then `email.delivered` within a few
+seconds. Failed deliveries (bounces) should update local user state.
+```
+
+**Optional.** Without it, `judge:` evaluation relies only on the criterion text and the trace.
+
+## `## Success Criteria` / `## Checks`
+
+The list of criteria graded after the run. Both names work — `## Success Criteria` is canonical, `## Checks` is an alias.
+
+```markdown
+## Success Criteria
+- check: Exactly 1 email is created in the Resend mirror
+- check: The email's `from` address is `hello@mail.acme.com`
+- judge: Error handling for bounces is implemented
+```
+
+**Required.** Must contain at least one criterion.
+
+Each criterion is a bullet list item. Tags (`check:` and `judge:`) are optional — Mirra infers one if omitted.
+
+See [Evaluation reference](/reference/evaluation-dp) for tag rules and the full inference grammar.
+
+## `## Config`
+
+Key-value pairs controlling scenario execution. Parsed as YAML-ish `key: value` lines.
+
+```markdown
+## Config
+mirrors: resend, twilio
+fixture: resend:transactional-busy
+timeout: 60
+runs: 3
+agent: claude-code
+```
+
+**Optional.** All keys have defaults.
+
+### Config keys
+
+<ParamField path="mirrors" type="list" required>
+  Comma-separated list of mirrors to provision for this scenario. Required — Mirra needs to know what to spin up. Example: `mirrors: stripe, resend, twilio`.
+</ParamField>
+
+<ParamField path="fixture" type="string">
+  Named built-in fixture applied as the seed. Format: `<mirror>:<fixture>` for a single mirror, or just `<fixture>` when there's only one mirror in `mirrors:`. Example: `fixture: resend:transactional-busy`.
+</ParamField>
+
+<ParamField path="fixture-file" type="path">
+  Path to a custom JSON seed file, relative to the scenario file. Example: `fixture-file: ./fixtures/my-seed.json`. Takes precedence over `fixture:` if both are set.
+</ParamField>
+
+<ParamField path="mirror-version" type="string">
+  Pin a specific mirror version. Example: `mirror-version: stripe@0.7.3`. If omitted, uses the latest stable.
+</ParamField>
+
+<ParamField path="timeout" type="integer" default="60">
+  Per-run timeout in seconds. If the run exceeds this, it's terminated and counted as a failure.
+</ParamField>
+
+<ParamField path="runs" type="integer" default="1">
+  How many times to execute the scenario. Each run starts from fresh seeded state. The final satisfaction score is the mean across runs.
+</ParamField>
+
+<ParamField path="agent" type="enum">
+  Which agent drives the scenario when using agent mode. Options: `claude-code`, `cursor`, `copilot`, `cline`, `custom`. Default `custom`. See [mirra run](/cli/run).
+</ParamField>
+
+<ParamField path="judge-model" type="string" default="claude-haiku-4-5">
+  LLM used to grade `judge:` criteria. Options: `claude-haiku-4-5`, `gpt-4o-mini`, `claude-sonnet-4-6`. Tiny judges are cheap and usually right; larger judges cost more but catch more edge cases.
+</ParamField>
+
+<ParamField path="persistent" type="boolean" default="false">
+  When true, the session created for this scenario is persistent. Rarely used — scenarios typically run in ephemeral mode.
+</ParamField>
+
+## A complete reference example
+
+```markdown
+# Refund a Partial Charge Within 14 Days
+
+## Setup
+A Stripe account with one customer `cus_alice` who paid $120 for a
+subscription 10 days ago via payment intent `pi_abc`. No refunds yet.
+
+## Prompt
+The customer wants a partial refund of $45 for an un-used portion of
+their subscription. Issue the refund, record it in our internal DB,
+and handle the webhook when it fires.
+
+## Expected Behavior
+The handler should create a refund via the Stripe API, receive
+`charge.refunded` and `payment_intent.partially_funded` webhooks,
+verify the signatures, update the user's billing record, and log
+the event. Partial refunds under a month should complete instantly;
+full refunds have a longer delay.
+
+## Success Criteria
+- check: Exactly 1 refund is created on payment_intent `pi_abc`
+- check: The refund amount is 4500 (in cents)
+- check: A `charge.refunded` webhook was received and signature-verified
+- check: The user's internal billing record shows `refunded: 45`
+- judge: The log line for the refund includes the customer id
+- judge: Error handling exists for refund-creation failure
+
+## Config
+mirrors: stripe
+fixture: subscription-lifecycle
+timeout: 90
+runs: 3
+agent: claude-code
+mirror-version: stripe@0.7.3
+judge-model: claude-haiku-4-5
+```
+
+## Validation
+
+Invalid scenarios fail fast when `mirra run` loads them. Common errors:
+
+<AccordionGroup>
+  <Accordion title="Missing #Title">
+    Every scenario must have exactly one H1. Fix: add `# Name of scenario` at the top.
+  </Accordion>
+  <Accordion title="No criteria">
+    A scenario without any `## Success Criteria` items can't be evaluated. Fix: add at least one criterion.
+  </Accordion>
+  <Accordion title="Unknown mirror in `mirrors:`">
+    `mirrors: github` fails — `github` isn't in the catalog. Fix: check [Mirrors — overview](/mirrors/overview).
+  </Accordion>
+  <Accordion title="Unknown fixture">
+    `fixture: resend:transactional-bust` fails because of the typo. Fix: reference an exact fixture name from the mirror's documentation.
+  </Accordion>
+  <Accordion title="fixture without mirrors">
+    `fixture: transactional-busy` without a `mirrors:` entry is ambiguous. Fix: use the qualified form `resend:transactional-busy`, or add `mirrors:`.
+  </Accordion>
+</AccordionGroup>
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Evaluation" icon="scale-balanced" href="/reference/evaluation-dp">
+    How `check:` and `judge:` criteria are graded.
+  </Card>
+  <Card title="First scenario" icon="pen" href="/guides/first-scenario">
+    Write a real scenario end-to-end.
+  </Card>
+</Columns>

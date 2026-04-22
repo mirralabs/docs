@@ -1,0 +1,177 @@
+---
+title: Resend
+description: The Resend mirror — transactional email, webhook events with Svix-style HMAC signing, domains and audiences.
+---
+
+Target vendor: [Resend API](https://resend.com/docs/api-reference). Webhook signing: Svix-style HMAC-SHA256 (`svix-id`, `svix-timestamp`, `svix-signature` headers).
+
+## Mirror URL
+
+```
+https://resend-<session_id>.mirra.run
+```
+
+Example: `https://resend-a7k2.mirra.run`.
+
+## SDK compatibility
+
+Official Resend SDKs work against the mirror with zero code changes when routed via the TLS proxy:
+
+<Tabs>
+  <Tab title="Node">
+    ```typescript
+    import { Resend } from 'resend';
+
+    const resend = new Resend(process.env.RESEND_API_KEY);
+
+    const { id } = await resend.emails.send({
+      from: 'hello@mail.acme.com',
+      to: 'alice@test.com',
+      subject: 'Welcome',
+      html: '<p>Welcome to Acme.</p>',
+    });
+    // → routed to resend-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import resend
+
+    resend.api_key = os.environ['RESEND_API_KEY']
+
+    resend.Emails.send({
+      'from': 'hello@mail.acme.com',
+      'to': 'alice@test.com',
+      'subject': 'Welcome',
+      'html': '<p>Welcome to Acme.</p>',
+    })
+    # → routed to resend-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Without the TLS proxy">
+    ```typescript
+    import { Resend } from 'resend';
+
+    const resend = new Resend(process.env.RESEND_API_KEY, {
+      baseUrl: 'https://resend-a7k2.mirra.run',
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Supported surface
+
+### Resources
+
+<AccordionGroup>
+  <Accordion title="Emails">
+    Send single emails, batch-send, retrieve by ID, list. HTML + plain text bodies, attachments, tags, reply-to, cc/bcc.
+  </Accordion>
+  <Accordion title="Domains">
+    Create, verify, retrieve, list, delete. Verification status transitions (`pending → verified` / `failed`). DNS record generation.
+  </Accordion>
+  <Accordion title="API Keys">
+    Create, list, revoke. Name, scope, permission levels. Last-used tracking.
+  </Accordion>
+  <Accordion title="Audiences & Contacts">
+    Audience CRUD. Contact add, update, unsubscribe, delete. Bulk import.
+  </Accordion>
+  <Accordion title="Broadcasts">
+    Create, schedule, send, list. Audience targeting. Preview.
+  </Accordion>
+</AccordionGroup>
+
+### Webhooks
+
+All Resend webhook event types fire with vendor-correct Svix-style signatures:
+
+- `email.sent` — immediately after a successful send
+- `email.delivered` — a few seconds after send (configurable per fixture)
+- `email.delivery_delayed` — when delivery is delayed by downstream providers
+- `email.bounced` — hard and soft bounces
+- `email.complained` — spam complaints
+- `email.opened` — tracking pixel hit
+- `email.clicked` — link click
+
+Signing headers:
+
+```
+svix-id:        msg_28pxRt9jRYvJMq8yc6ZD
+svix-timestamp: 1713802534
+svix-signature: v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=
+```
+
+Verify using the official Resend webhooks library, no code changes:
+
+```typescript
+import { Webhook } from 'svix';
+
+const wh = new Webhook(process.env.RESEND_WEBHOOK_SECRET);
+const event = wh.verify(rawBody, {
+  'svix-id':        req.headers['svix-id'],
+  'svix-timestamp': req.headers['svix-timestamp'],
+  'svix-signature': req.headers['svix-signature'],
+});
+```
+
+## Built-in fixtures
+
+<AccordionGroup>
+  <Accordion title="resend:empty">
+    No domains, no emails. A blank Resend account.
+  </Accordion>
+  <Accordion title="resend:transactional-busy">
+    One verified domain `mail.acme.com`, 100 sent emails across the last 7 days with realistic delivery/bounce/open rates. Good for testing scale behavior.
+  </Accordion>
+  <Accordion title="resend:bounced-domain">
+    Domain with recent bounce rate above the provider's threshold — suspended state. Good for testing your handler's response to `email.bounced` and domain suspension.
+  </Accordion>
+  <Accordion title="resend:marketing-list">
+    Audience with 1,000 contacts and three prior broadcasts. Good for testing broadcast flows.
+  </Accordion>
+  <Accordion title="resend:over-quota">
+    Account at monthly send limit. Any `POST /emails` returns `429` with Resend's exact rate-limit payload. Good for testing your quota-exceeded handling.
+  </Accordion>
+</AccordionGroup>
+
+Load a fixture:
+
+```bash
+mirra up --mirrors=resend --seed=resend:transactional-busy
+```
+
+## Coverage gaps
+
+- **Suppression lists** — not yet mirrored.
+- **Custom domains with CNAME proxies** — mocked as always-valid.
+- **Open/click tracking pixels** — simulated via `/_mirra/simulate`, not from real client requests.
+
+See [status.mirra.run/resend](https://status.mirra.run/resend) for the live list.
+
+## Simulating events
+
+Real delivery timing (a few seconds between `email.sent` and `email.delivered`) is simulated by the engine's event-dispatch scheduler — you get realistic timing without waiting on actual SMTP.
+
+To force an immediate bounce or complaint for testing:
+
+```bash
+curl -X POST https://resend-a7k2.mirra.run/_mirra/simulate \
+  -H "Content-Type: application/json" \
+  -d '{ "event": "email.bounced", "emailId": "email_abc", "bounce": { "type": "hard", "reason": "user not found" } }'
+```
+
+See [API reference](/reference/api#simulate) for the full event list.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Twilio" icon="message" href="/mirrors/twilio">
+    The SMS mirror.
+  </Card>
+  <Card title="Stripe" icon="credit-card" href="/mirrors/stripe">
+    The payments mirror.
+  </Card>
+  <Card title="First scenario" icon="file-lines" href="/guides/first-scenario">
+    Write and run a Resend scenario end-to-end.
+  </Card>
+</Columns>

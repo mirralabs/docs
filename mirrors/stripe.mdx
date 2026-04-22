@@ -1,0 +1,195 @@
+---
+title: Stripe
+description: The Stripe mirror — customers, subscriptions, payment intents, invoices, webhooks. HMAC-SHA256 signing matching Stripe's exact scheme.
+---
+
+<Note>
+  **Month 2 availability.** The Stripe mirror ships after Resend and Twilio. Check the [status page](https://status.mirra.run) for the current release state.
+</Note>
+
+Target vendor: [Stripe API version 2024-06-20](https://docs.stripe.com/api). Webhook signing: HMAC-SHA256 with `Stripe-Signature` header matching Stripe's exact scheme (timestamp + signature, `v1=…`, tolerant of tampering detection).
+
+## Mirror URL
+
+```
+https://stripe-<session_id>.mirra.run
+```
+
+Example: `https://stripe-a7k2.mirra.run`.
+
+## SDK compatibility
+
+All official Stripe SDKs work against the mirror with zero code changes when routed via the TLS proxy:
+
+<Tabs>
+  <Tab title="Node">
+    ```typescript
+    import Stripe from 'stripe';
+
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+    const customer = await stripe.customers.create({
+      email: 'alice@test.com',
+    });
+    // → routed to stripe-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import stripe
+
+    stripe.api_key = os.environ['STRIPE_SECRET_KEY']
+
+    customer = stripe.Customer.create(email='alice@test.com')
+    # → routed to stripe-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Ruby">
+    ```ruby
+    require 'stripe'
+
+    Stripe.api_key = ENV['STRIPE_SECRET_KEY']
+
+    customer = Stripe::Customer.create(email: 'alice@test.com')
+    # → routed to stripe-a7k2.mirra.run
+    ```
+  </Tab>
+  <Tab title="Without the TLS proxy">
+    ```typescript
+    import Stripe from 'stripe';
+
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+      host: 'stripe-a7k2.mirra.run',
+      port: 443,
+      protocol: 'https',
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Supported surface
+
+### Resources
+
+<AccordionGroup>
+  <Accordion title="Customers">
+    Full CRUD. Customer metadata, email, default payment method, address, tax ID. Search by email.
+  </Accordion>
+  <Accordion title="Subscriptions">
+    Full lifecycle — `trialing → active → past_due → canceled` and the variants (`unpaid`, `incomplete`, `incomplete_expired`). Prorations. Quantity changes. Plan changes. Cancellation at period end vs. immediate.
+  </Accordion>
+  <Accordion title="Payment intents">
+    Create, confirm, capture, cancel. Status transitions (`requires_payment_method → requires_confirmation → succeeded / requires_action`). 3DS flows simulated via `/_mirra/simulate`.
+  </Accordion>
+  <Accordion title="Invoices">
+    Subscription-generated invoices, manual invoices, line items, tax, discount application. Finalize, void, mark uncollectible. Dunning timeline.
+  </Accordion>
+  <Accordion title="Products & Prices">
+    Full CRUD on products, prices, price lookup keys. Metered vs. licensed. Tiered pricing.
+  </Accordion>
+  <Accordion title="Coupons & Promotion Codes">
+    Create, apply to subscriptions and invoices. Percent-off, amount-off. Duration types (once / forever / repeating). Redemption limits.
+  </Accordion>
+  <Accordion title="Refunds">
+    Create, retrieve, list. Reason tracking. Partial refunds. Webhook dispatch.
+  </Accordion>
+  <Accordion title="Events & Webhook Endpoints">
+    Register endpoints, list events, retry failed deliveries via `/_mirra/webhooks/retry`.
+  </Accordion>
+</AccordionGroup>
+
+### Webhooks
+
+All standard Stripe webhook event types fire on their correct schedule with correct signatures:
+
+- `customer.created`, `customer.updated`, `customer.deleted`
+- `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `customer.subscription.trial_will_end`
+- `invoice.created`, `invoice.finalized`, `invoice.paid`, `invoice.payment_failed`, `invoice.payment_succeeded`, `invoice.upcoming`, `invoice.voided`
+- `payment_intent.created`, `payment_intent.succeeded`, `payment_intent.payment_failed`, `payment_intent.requires_action`
+- `charge.succeeded`, `charge.failed`, `charge.refunded`
+- `payment_method.attached`, `payment_method.detached`, `payment_method.updated`
+
+Signing uses Stripe's exact scheme:
+
+```
+Stripe-Signature: t=1713802534,v1=5257a869e7ecebeda32affa62cdca3fa51cad7e77a0e56ff536d0ce8e108d8bd
+```
+
+Verify using the SDK's standard `stripe.webhooks.constructEvent()` — no changes from production code.
+
+## Built-in fixtures
+
+<AccordionGroup>
+  <Accordion title="stripe:empty">
+    No customers, no subscriptions, no products. A blank Stripe account.
+  </Accordion>
+  <Accordion title="stripe:subscription-lifecycle">
+    One customer with a subscription in `trialing`, one in `active`, one in `past_due`, one `canceled`. Products and prices wired up. Good for testing state transitions.
+  </Accordion>
+  <Accordion title="stripe:failed-payments">
+    Three customers with failed payment methods. Dunning state. Next retry scheduled. Good for testing your invoice.payment_failed handler.
+  </Accordion>
+  <Accordion title="stripe:dunning-active">
+    Customer with active dunning — multiple failed invoices, subscription in `past_due`, retry schedule progressing. Good for testing cancellation-after-dunning flows.
+  </Accordion>
+</AccordionGroup>
+
+Load a fixture:
+
+```bash
+mirra up --mirrors=stripe --seed=stripe:subscription-lifecycle
+```
+
+Or in a scenario:
+
+```markdown
+## Config
+mirrors: stripe
+fixture: subscription-lifecycle
+```
+
+## Coverage gaps
+
+Gaps are documented and tracked as GitHub issues. Current gaps for Stripe:
+
+- **Stripe Tax** — not mirrored. Requests to `/v1/tax/*` return a 501.
+- **Connect** — standard accounts supported; Express and Custom not yet.
+- **Financial Connections** — not mirrored.
+- **Radar rules** — simulated via `/_mirra/simulate` events, not rule-engine-driven.
+- **Terminal** — not mirrored.
+
+See [status.mirra.run/stripe](https://status.mirra.run/stripe) for the live list.
+
+## Drift state
+
+Last vendor diff: see the [status page](https://status.mirra.run/stripe). Drift SLA is 7-day detect, 14-day fix for critical changes.
+
+Current mirror version: see `x-mirra-version` response header after any request.
+
+## Simulating events
+
+Stripe has real-world triggers that don't exist in a pure code path — a payment failing after 14 days, a webhook retrying, a radar rule firing. The `/_mirra/simulate` endpoint exposes these explicitly:
+
+```bash
+curl -X POST https://stripe-a7k2.mirra.run/_mirra/simulate \
+  -H "Content-Type: application/json" \
+  -d '{ "event": "invoice.payment_failed", "subscription": "sub_Qzp" }'
+```
+
+Triggers the event as if it had fired naturally — the subscription state updates, the webhook dispatches, everything downstream reacts. Used heavily by scenario drivers.
+
+See [API reference](/reference/api#simulate) for the full list of simulatable events.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Resend" icon="envelope" href="/mirrors/resend">
+    The email mirror.
+  </Card>
+  <Card title="Twilio" icon="message" href="/mirrors/twilio">
+    The SMS mirror.
+  </Card>
+  <Card title="First scenario" icon="file-lines" href="/guides/first-scenario">
+    Run a scenario against a mirror end-to-end.
+  </Card>
+</Columns>

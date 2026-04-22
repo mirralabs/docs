@@ -1,0 +1,181 @@
+---
+title: mirra run
+description: Execute a scenario against provisioned mirrors and evaluate the result.
+---
+
+```bash
+mirra run <scenario.md> [flags]
+```
+
+Reads a markdown scenario, provisions the mirrors it needs, executes the scenario (either via a driver or by letting a coding agent run against the session), and evaluates the success criteria.
+
+The canonical entry point for CI, pre-merge gates, and agent validation runs.
+
+## Common invocations
+
+<CodeGroup>
+```bash Run a single scenario
+mirra run scenarios/welcome-email.md
+```
+
+```bash Multiple scenarios in one session
+mirra run scenarios/*.md
+```
+
+```bash N runs for a satisfaction score
+mirra run scenarios/refund-flow.md --runs=5
+```
+
+```bash Pin the agent that drives the scenario
+mirra run scenarios/welcome-email.md --agent=claude-code
+```
+
+```bash Run against an existing session
+mirra run scenarios/welcome-email.md --session=ses_a7k2
+```
+</CodeGroup>
+
+## How a run works
+
+```
+┌─────────────────────────────────────────────────┐
+│  1. mirra run reads scenario.md                 │
+│  2. provisions session with declared mirrors    │
+│  3. loads seed (fixture / LLM / json)           │
+│  4. drives the scenario:                        │
+│      · test-suite mode  → runs the test        │
+│      · agent mode       → hands prompt to agent │
+│  5. captures complete trace                     │
+│  6. evaluator grades every `check:` criterion   │
+│  7. LLM-judge grades every `judge:` criterion   │
+│  8. emits satisfaction score + per-criterion    │
+│  9. tears down (ephemeral) or holds (persistent)│
+└─────────────────────────────────────────────────┘
+```
+
+## Output
+
+Human-readable default:
+
+```
+$ mirra run scenarios/welcome-email.md --runs=3
+
+→ provisioning resend mirror…
+✓ session ses_a7k2 ready in 1.8s
+
+→ run 1/3
+  ✓ Exactly 1 email is created in the Resend mirror
+  ✓ The email's from address is hello@mail.acme.com
+  ✓ At least 1 email.sent webhook was received
+  ✓ The webhook signature was verified
+  ✓ The email subject is appropriate for a welcome message
+  ✗ Error handling for bounces is implemented
+
+→ run 2/3
+  ✓ …
+  …
+
+satisfaction score: 87% (15/18 criteria passed across 3 runs)
+
+per-criterion breakdown:
+  ✓ Exactly 1 email is created in the Resend mirror         3/3
+  ✓ The email's from address is hello@mail.acme.com          3/3
+  ✓ At least 1 email.sent webhook was received               3/3
+  ✓ The webhook signature was verified                       3/3
+  ✓ The email subject and body appropriate for a welcome     3/3
+  ✗ Error handling for bounces is implemented                0/3
+
+dashboard: https://app.mirra.run/runs/run_9xkp2m
+```
+
+Machine-readable with `--json`:
+
+```json
+{
+  "runId": "run_9xkp2m",
+  "scenario": "scenarios/welcome-email.md",
+  "sessionId": "ses_a7k2",
+  "runs": 3,
+  "satisfactionScore": 0.87,
+  "criteria": [
+    { "label": "Exactly 1 email is created in the Resend mirror", "kind": "check", "passed": 3, "total": 3 },
+    { "label": "Error handling for bounces is implemented",        "kind": "judge", "passed": 0, "total": 3 }
+  ],
+  "durationMs": 14812,
+  "dashboardUrl": "https://app.mirra.run/runs/run_9xkp2m"
+}
+```
+
+## Flags
+
+<ParamField path="--runs" type="integer" default="1">
+  Execute the scenario N times in a row. Between runs, all mirrors in the session are reset to their seeded state. The final score is the mean percentage of criteria passed across runs.
+</ParamField>
+
+<ParamField path="--session" type="string">
+  Run against an existing session instead of provisioning a new one. The session must have all mirrors the scenario requires. Use this when you want multiple scenarios to share warm mirrors.
+</ParamField>
+
+<ParamField path="--agent" type="enum">
+  Name the agent driving the scenario. Options: `claude-code`, `cursor`, `copilot`, `cline`, `custom`. Affects how Mirra hands the prompt and how the run is logged. Default is `custom` (you're running a test driver, not an agent).
+</ParamField>
+
+<ParamField path="--fixture" type="string">
+  Override the scenario's declared fixture for this run. Same format as in the scenario file: `resend:transactional-busy`.
+</ParamField>
+
+<ParamField path="--timeout" type="duration" default="60s">
+  Per-run timeout. If the run exceeds this, it's terminated and counted as a failure. Lift with longer scenarios or slow agents.
+</ParamField>
+
+<ParamField path="--fail-below" type="float">
+  Exit non-zero if the satisfaction score is below the given threshold (0.0–1.0). Use this to gate CI: `--fail-below=0.9` means CI fails if fewer than 90% of criteria pass.
+</ParamField>
+
+<ParamField path="--json" type="boolean" default="false">
+  Emit the final result as one JSON line on stdout. Combine with `--quiet` to suppress the per-run log.
+</ParamField>
+
+<ParamField path="--quiet" type="boolean" default="false">
+  Suppress live progress output. The final summary still prints (or just the JSON line if `--json`).
+</ParamField>
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every criterion passed (or passed above `--fail-below`). |
+| `1` | Satisfaction score below `--fail-below`. |
+| `2` | A run timed out. |
+| `3` | A mirror could not be provisioned. |
+| `4` | Scenario file was invalid. |
+| `64` | CLI usage error (unknown flag, missing argument). |
+
+## Driving the scenario
+
+`mirra run` doesn't execute code on its own. It needs a driver that turns the scenario's `## Prompt` into actual work against the session. Three common drivers:
+
+<Tabs>
+  <Tab title="Agent (default)">
+    Hand the prompt to a coding agent via the MCP server. The agent reads mirror state, fires requests, and writes code that operates against the session. Used for agent evaluation.
+  </Tab>
+  <Tab title="Test suite">
+    Let your existing test framework (Vitest, Jest) drive the session. The scenario's success criteria grade what the test run produced. Use `@mirrahq/vitest`'s `withMirra()` wrapper and run tests inside `mirra run`.
+  </Tab>
+  <Tab title="Custom driver">
+    Ship a driver script that reads the scenario file and orchestrates whatever matters to your team. The Mirra CLI hands it a session ID; the driver does the rest.
+  </Tab>
+</Tabs>
+
+See [Guide — First scenario](/guides/first-scenario) for an end-to-end walkthrough.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Scenario format" icon="book-open" href="/reference/scenario-format">
+    Every valid section, every config key, every edge case in a scenario.
+  </Card>
+  <Card title="CI integration" icon="circle-check" href="/guides/ci-integration">
+    Wire mirra run into GitHub Actions or your CI of choice.
+  </Card>
+</Columns>
