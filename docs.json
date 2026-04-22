@@ -70,11 +70,6 @@
           "anchor": "Thesis",
           "href": "https://mirra.run/thesis",
           "icon": "book-open-cover"
-        },
-        {
-          "anchor": "GitHub",
-          "href": "https://github.com/mirrahq",
-          "icon": "github"
         }
       ]
     }
